@@ -874,10 +874,14 @@ dependencies = [
 name = "nilx-one-bot"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
  "teloxide",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

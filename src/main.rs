@@ -3,7 +3,7 @@
 
 //! Isolated test-only bot. Configuration failures are reported, not panics.
 
-use nilx_one_bot::providers::telegram::run_test_bot;
+use nilx_one_bot::{login::LoginGateway, providers::telegram::run_test_bot};
 use tracing_subscriber::EnvFilter;
 
 fn test_token<'a>(mode: &str, token: &'a str) -> Result<&'a str, &'static str> {
@@ -28,7 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::var("BOT_RUN_MODE").unwrap_or_default();
     let token = std::env::var("BOT_TEST_TOKEN").unwrap_or_default();
     let token = test_token(&mode, &token).map_err(std::io::Error::other)?;
-    run_test_bot(token.to_owned()).await;
+    let login = LoginGateway::from_env().map_err(std::io::Error::other)?;
+    run_test_bot(token.to_owned(), login).await;
     Ok(())
 }
 

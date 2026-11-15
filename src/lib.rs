@@ -4,4 +4,5 @@
 //! 0x1 messenger transport adapters. This crate holds no Bond or game authority.
 
 pub mod application;
+pub mod login;
 pub mod providers;

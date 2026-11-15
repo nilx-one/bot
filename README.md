@@ -19,6 +19,7 @@ Only a separate **test bot**, using Rust and Teloxide. Private, original human c
 
 - /start and /open: introduce the standalone text client.
 - /help: explain basic commands and honest availability.
+- /login: optionally request an AIS authorization link from the trusted product Gateway; fail closed when unavailable.
 - Other slash commands: reply in text that a verified AIS identity and Core Gateway are required. No gameplay mutation.
 
 Forwarded messages, bot senders and groups are not eligible command sources. No command is automatically handed to the production Web Mini App. A command cannot create location truth or a BondChain.
@@ -28,6 +29,34 @@ Forwarded messages, bot senders and groups are not eligible command sources. No 
 The finished text client must expose **all existing Core product capabilities**, including information about Bond/Avaia, inventory and items, subscriptions, organizations and eligible travel. It uses typed Core read/actions and parity tests, not a second set of rules or language-model inference. Work is tracked in [Core #123](https://github.com/nilx-one/core/issues/123) and [Core #124](https://github.com/nilx-one/core/issues/124).
 
 AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/issues/3)). Bot chat has its own Core-controlled product client/session and must participate in Single Active Client rather than sharing the Mini App's browser session.
+
+## Optional AIS login (separate dependent PR)
+
+The explicit /login command asks the authenticated Core-owned Gateway for a
+short-lived, single-use OIDC transaction, and only then sends the user to the
+AIS page. The bot never guesses an authorization URL, checks a password,
+receives a callback token, links a Bond or activates a product session.
+
+The Gateway must implement a service-authenticated
+POST /api/v1/telegram/login/start request and return a URL for
+https://auth.aiaiaiai.org/0x1 containing state, nonce, code+PKCE S256 and the
+dedicated registered Telegram callback. It must bind the real Telegram sender,
+persist/consume the transaction, check signed AIS subject continuity and require
+explicit account-link confirmation before any Bond binding.
+
+Optional test-only environment settings (all required together):
+
+~~~sh
+export BOT_LOGIN_START_URL=https://nilx.one/api/v1/telegram/login/start
+export BOT_GATEWAY_SERVICE_TOKEN='<separate 32+ character service secret>'
+export BOT_OIDC_CALLBACK_URL=https://nilx.one/api/v1/telegram/login/callback
+~~~
+
+The dedicated Telegram callback does not exist yet. Do not substitute the
+regular browser product-session callback: that would create a browser session
+rather than confirm the correct Telegram client. Without a working Gateway,
+the command answers that login is unavailable. This is not an end-to-end
+account-link or a production feature.
 
 ## Test mode
 
