@@ -3,3 +3,7 @@
 /.env.*
 !/env.example
 *.log
+
+# Local non-authoritative Telegram panel metadata
+bot-ui-state.json
+bot-ui-state.tmp

@@ -11,6 +11,8 @@ pub enum PublicAction {
     Help,
     /// Requires a server-issued, single-use AIS browser transaction.
     StartLogin,
+    /// Text-only entry to the Core-owned subscription projection.
+    Subscription,
     /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
@@ -30,6 +32,7 @@ pub fn classify_message(text: &str) -> PublicAction {
         "/start" | "/open" => PublicAction::EnterTextClient,
         "/help" => PublicAction::Help,
         "/login" => PublicAction::StartLogin,
+        "/subscription" => PublicAction::Subscription,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,
     }
@@ -43,15 +46,16 @@ pub const fn public_reply(action: PublicAction) -> Option<&'static str> {
         PublicAction::EnterTextClient => Some(
             "0x1 · Текстовий клієнт\n\
              Тут можна користуватися 0x1 без карти.\n\
-             /help — команди та стан доступності.",
+             /login — AIS · /subscription — підписка · /help — допомога.",
         ),
         PublicAction::Help => Some(
             "0x1 · Допомога\n\
              /start — відкрити текстовий клієнт\n\
              /help — допомога\n\
+             /subscription — підписка\n\
              Інвентар, Bond, Avaia та інші дії стануть доступні після AIS і Core Gateway.",
         ),
-        PublicAction::StartLogin => None,
+        PublicAction::StartLogin | PublicAction::Subscription => None,
         PublicAction::NeedsCore => Some(
             "Ця команда поки недоступна: потрібні AIS-авторизація та Core Gateway. Дані 0x1 не змінено.",
         ),
@@ -78,6 +82,11 @@ mod tests {
         assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
         assert_eq!(public_reply(PublicAction::StartLogin), None);
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
+        assert_eq!(
+            classify_message("/subscription"),
+            PublicAction::Subscription
+        );
+        assert_eq!(public_reply(PublicAction::Subscription), None);
         assert!(
             public_reply(PublicAction::Help)
                 .unwrap()

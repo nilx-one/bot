@@ -6,3 +6,4 @@
 pub mod application;
 pub mod login;
 pub mod providers;
+pub mod ui;

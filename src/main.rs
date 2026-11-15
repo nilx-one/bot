@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = std::env::var("BOT_TEST_TOKEN").unwrap_or_default();
     let token = test_token(&mode, &token).map_err(std::io::Error::other)?;
     let login = LoginGateway::from_env().map_err(std::io::Error::other)?;
-    run_test_bot(token.to_owned(), login).await;
+    run_test_bot(token.to_owned(), login).await?;
     Ok(())
 }
 
