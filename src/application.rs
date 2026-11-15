@@ -1,33 +1,57 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Transport-neutral intent classification for the initial read-only bootstrap.
-//! No provider update becomes a Core command or BondChain event at this stage.
+//! Provider-neutral command classification for the independent 0x1 text client.
+//! No Telegram update becomes a Bond, a session or a Core command here.
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PublicAction {
-    OpenMiniApp,
+    /// Enter the text experience, without opening the Web Mini App.
+    EnterTextClient,
     Help,
-    /// Anything requiring a verified AIS binding and a Core product session.
+    /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
 }
 
-/// Classifies an input; it never authenticates a user or executes product logic.
-/// `/command@botname` is a Telegram convention; other providers may implement
-/// their own command parser behind the same action boundary.
+/// Returns the semantic action, never authenticates or executes a game rule.
+/// Telegram may append an @botname recipient to slash commands.
 #[must_use]
 pub fn classify_message(text: &str) -> PublicAction {
     let Some(first) = text.split_whitespace().next() else {
         return PublicAction::Ignore;
     };
-    let name = first.split('@').next().unwrap_or_default();
+    let raw_name = first.split('@').next().unwrap_or_default();
+    let name = raw_name.to_ascii_lowercase();
 
-    match name {
-        "/start" | "/open" => PublicAction::OpenMiniApp,
+    match name.as_str() {
+        "/start" | "/open" => PublicAction::EnterTextClient,
         "/help" => PublicAction::Help,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,
+    }
+}
+
+/// Text replies for unauthenticated bootstrap commands. A future authorized
+/// Core answer replaces NeedsCore; no Web button, invented data or action.
+#[must_use]
+pub const fn public_reply(action: PublicAction) -> Option<&'static str> {
+    match action {
+        PublicAction::EnterTextClient => Some(
+            "0x1 · Текстовий клієнт\n\
+             Тут можна користуватися 0x1 без карти.\n\
+             /help — команди та стан доступності.",
+        ),
+        PublicAction::Help => Some(
+            "0x1 · Допомога\n\
+             /start — відкрити текстовий клієнт\n\
+             /help — допомога\n\
+             Інвентар, Bond, Avaia та інші дії стануть доступні після AIS і Core Gateway.",
+        ),
+        PublicAction::NeedsCore => Some(
+            "Ця команда поки недоступна: потрібні AIS-авторизація та Core Gateway. Дані 0x1 не змінено.",
+        ),
+        PublicAction::Ignore => None,
     }
 }
 
@@ -36,37 +60,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn publicly_safe_commands_do_not_need_a_bond() {
-        assert_eq!(classify_message("/open"), PublicAction::OpenMiniApp);
-        assert_eq!(
-            classify_message("/open@nilxone_bot"),
-            PublicAction::OpenMiniApp
-        );
-        assert_eq!(
-            classify_message("/start payload"),
-            PublicAction::OpenMiniApp
-        );
-        assert_eq!(classify_message("/help"), PublicAction::Help);
-    }
-
-    #[test]
-    fn privileged_and_unknown_commands_do_not_execute() {
-        for command in [
-            "/unlink",
-            "/travel",
-            "/set_position",
-            "/whoami",
-            "/go@nilxone_bot",
-            "/admin",
-        ] {
-            assert_eq!(classify_message(command), PublicAction::NeedsCore);
+    fn text_entry_is_not_the_web_mini_app() {
+        for command in ["/start", "/open", "/Open", "/START", "/open@nilxone_bot"] {
+            assert_eq!(classify_message(command), PublicAction::EnterTextClient);
+            let reply = public_reply(classify_message(command)).unwrap();
+            assert!(reply.contains("Текстовий клієнт"));
+            assert!(!reply.contains("nilx.one/telegram"));
         }
     }
 
     #[test]
-    fn plain_text_never_claims_a_product_command() {
-        assert_eq!(classify_message("hello"), PublicAction::Ignore);
-        assert_eq!(classify_message(""), PublicAction::Ignore);
-        assert_eq!(classify_message("  "), PublicAction::Ignore);
+    fn help_and_unavailable_are_text_only() {
+        assert_eq!(classify_message("/HELP"), PublicAction::Help);
+        assert!(public_reply(PublicAction::Help).unwrap().contains("Допомога"));
+        for command in ["/unlink", "/travel", "/set_position", "/inventory", "/avaia", "/admin"] {
+            assert_eq!(classify_message(command), PublicAction::NeedsCore);
+            let reply = public_reply(classify_message(command)).unwrap();
+            assert!(reply.contains("Core Gateway"));
+            assert!(!reply.contains("http"));
+        }
+    }
+
+    #[test]
+    fn ordinary_text_has_no_implicit_authority() {
+        for input in ["hello", "лети на золоті", "", "   "] {
+            assert_eq!(classify_message(input), PublicAction::Ignore);
+            assert_eq!(public_reply(classify_message(input)), None);
+        }
     }
 }
