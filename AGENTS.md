@@ -1,24 +1,25 @@
 # AGENTS.md — nilx-one/bot
 
-## Architecture and protocol
+## Client and protocol
 
-- A Telegram chat bot and its Telegram Mini App are two surfaces of one intended logical 0x1 Telegram client. The Mini App's Web source remains in nilx-one/web.
-- Transport adapters never define Bond, Avaia, Interaction, BondChain, completion, consent, Relationship, game writes or client activation. Those belong to nilx-one/core.
-- Only aiaiaiai Identity Service can verify/link provider identity. Telegram usernames, chat IDs and forwarded text do not authenticate Bond authority.
-- Do not connect directly to the product database. Use typed least-privilege Core Gateway contracts after they are implemented and reviewed.
-- Until the Core shared-logical-client session contract exists, bot commands may not mutate gameplay or bypass Single Active Client.
-- No production Telegram token, webhook, or poller before explicit cutover authorization. Never have two polling owners of the same token.
-- Preserve the current bot's Open/Status/Admin slot IDs and replay guards when eventually migrating. Delivery receipts are not BondChain facts.
+- This repository is the **fourth 0x1 product client and the first text client**, not a launcher or a subset of the Web Mini App.
+- A player can read product state and use Core-supported capabilities in a conversation, without MapLibre or a native application. A command becomes a typed Core request and a textual projection; the chat transport never owns the game rule.
+- The Telegram Mini App remains in nilx-one/web as a **distinct Web presentation**. Do not merge text-client sessions into Web or automatically send players to the production Mini App from this client.
+- The text client has its own Core-controlled product session and obeys Single Active Client. Provider sign-in does not make it active by itself.
+- Only aiaiaiai Identity Service can authenticate and link a real identity. Telegram usernames, IDs and forwarded text do not authenticate Bond authority. Core owns session activation, Bond/Avaia state, inventory and relationship truth.
+- Do not connect to product SQLite. Use least-privilege, versioned Core Gateway requests only after the corresponding server implementation and authorization rules are reviewed.
+- Never claim BondChain completion from a delivered message, bot acknowledgement, AI output, or client presentation.
+- Reject forwarded, anonymous/group, bot and unverified updates from product command execution. Unknown/disabled commands return text and never fabricate success.
+- Until the Gateway/identity/session contracts are verified, commands requiring Core are unavailable, **not rerouted to another client**.
+- No production polling, token reuse, session migration or deploy without explicit cutover approval. Exactly one polling owner per production Telegram bot token.
 
 ## GitHub delivery
 
-- Never commit to the default branch directly. Start from latest main. One independent task per feature/ or fix/ branch and PR.
-- Inspect existing repository instructions and related PRs before modifying code. Keep changes small, tested and rollback-friendly.
-- Draft PR while incomplete, then Full CI on the exact head. Validate for Deploy only when applicable; reuse CI outputs and do not deploy in CI.
-- Merge and deploy require separate explicit authorization under this project's delivery policy; never assume merge implies deploy.
-- Attribute commits to the actual GitHub account; do not fabricate 0x0sky/x0skai co-authorship or tool contributions. Preserve genuine author and required coauthor trailers.
-- Source and config files use `© 2026 aiaiaiai · aiaiaiai.org` and `SPDX-License-Identifier: MPL-2.0` when supported. Never overwrite third-party licenses.
-- Do not claim CI, runtime availability, image activation or migration success without evidence.
+- Never commit directly to the default branch. Start from its latest state. One task per branch/PR; dependent stages stay separated.
+- Full CI: format, Clippy, tests and code contracts on exact head. Validate for Deploy only when a deployable artifact is ready; do not deploy in CI.
+- Merge and deploy require separate explicit authorization. No duplicate work or unverifiable completion claims.
+- Commit author and coauthor trailers describe actual contributors; never fabricate identities, tools or joint authorship.
+- Authored source/config files use the repository-specific copyright header and MPL-2.0 SPDX identifier; preserve third-party notices.
 
 ---
 
