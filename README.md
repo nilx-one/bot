@@ -1,56 +1,52 @@
-# 0x1 Bot
+# 0x1 Bot — independent text client
 
-Messenger-native surfaces of the **same 0x1 product**. First implementation: Telegram chat bot. Future WhatsApp and Viber adapters may be added when their real capabilities and provider requirements are validated.
+**Status:** isolated test bootstrap; no AIS login, game writes, or production cutover yet.
 
-**Status:** test-only bootstrap; no live cutover, no Bond mutations and no production token support.
+This repository is the **fourth 0x1 client**, and its first text-only client. The player uses 0x1 directly in a messenger conversation; there is no requirement to open a Web Mini App or a native app. The same Rust Core owns Bond, Avaia, inventory, interactions, sessions, progression, and spatial semantics across text and graphical clients.
 
-## One Telegram client, two surfaces
+The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-one/web). It is an independent Web presentation and is not the gameplay fallback or shared login session for this text client. A future adapter may expose a deliberate link to Web without mixing identities, product sessions or authority.
 
-- **Telegram chat bot:** message delivery, commands and private-chat presentation, eventually handled in this repository.
-- **Telegram Mini App:** the same Web 0x1 product opened *inside the Telegram bot* via the Web App button. Its React composition root and Telegram WebView SDK stay in [nilx-one/web](https://github.com/nilx-one/web) at `apps/telegram-mini-app` and `packages/host-telegram`. Do **not** duplicate or move the Web UI into this repository.
+## Ownership
 
-Bot chat and its Mini App are intended to be **one logical Telegram product client**. Their common Core-owned product session needs the normative Single Active Client revision described in [0x1#87](https://github.com/nilx-one/0x1/pull/87). Until implemented, the bot does not authorize gameplay writes or bypass a client handoff.
+- aiaiaiai Identity Service (AIS) owns passwords, provider bindings and verified identity.
+- nilx-one/core owns product session activation, game state, permissions, and deterministic commands, errors and text projections.
+- nilx-one/bot verifies Telegram transport context, sends typed requests to a least-privilege Core Gateway when available, and renders responses as text.
+- prism-hub routes between services where installed; it never owns Bond or game state.
 
-## Boundaries
+## What this PR implements
 
-- [aiaiaiai Identity Service](https://github.com/aiaiaiai-org/4x-ais) owns identity and provider binding. Telegram transport evidence is not a Bond login.
-- [nilx-one/core](https://github.com/nilx-one/core) owns product sessions, permissions, game state, transitions, interactions and BondChain.
-- [Core Gateway proposal](https://github.com/nilx-one/core/issues/122) will allow authenticated bot adapters to call narrow, typed Core operations. This repository must **not** connect to the Core/Web SQLite database.
-- [0x1 architecture PR](https://github.com/nilx-one/0x1/pull/88) defines safe Telegram extraction and follow-up.
-- prism-hub routes service-to-service requests where available, but is not the authority for identity or product state.
+Only a separate **test bot**, using Rust and Teloxide. Private, original human commands:
 
-## Source layout
+- /start and /open: introduce the standalone text client.
+- /help: explain basic commands and honest availability.
+- Other slash commands: reply in text that a verified AIS identity and Core Gateway are required. No gameplay mutation.
 
-```
-src/
-  main.rs                 explicit test-only process composition
-  application.rs          public command classification; no game authority
-  providers/
-    telegram.rs           Telegram Bot API adapter and embedded Mini App button
-```
+Forwarded messages, bot senders and groups are not eligible command sources. No command is automatically handed to the production Web Mini App. A command cannot create location truth or a BondChain.
 
-The first slice intentionally supports only private-chat `/start`, `/open`, and `/help`. All other slash commands produce a non-mutating unavailable response. The current Telegram production bot, its persistent Open/Status/Admin message slots, location commands and admin workflows continue running in Web until a separately authorized cutover.
+## Text-client feature scope
 
-## Local test mode
+The finished text client must expose **all existing Core product capabilities**, including information about Bond/Avaia, inventory and items, subscriptions, organizations and eligible travel. It uses typed Core read/actions and parity tests, not a second set of rules or language-model inference. Work is tracked in [Core #123](https://github.com/nilx-one/core/issues/123) and [Core #124](https://github.com/nilx-one/core/issues/124).
 
-Use a **different Telegram test bot** from the existing production bot:
+AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/issues/3)). Bot chat has its own Core-controlled product client/session and must participate in Single Active Client rather than sharing the Mini App's browser session.
 
-```sh
+## Test mode
+
+Use a **separate Telegram test bot token**, never the running production bot's token:
+
+~~~sh
 export BOT_RUN_MODE=test
 export BOT_TEST_TOKEN='<separate-test-bot-token>'
-cargo test
+cargo test --all-targets
 cargo run
-```
+~~~
 
-No token is saved in the repository. The application refuses any `BOT_RUN_MODE` other than `test`. It does not configure production webhook, production polling or existing Telegram message slots.
+An empty token or an unsupported run mode returns a configuration error without opening a polling loop. This repository has no deployed production bot and does not change the existing Web process, Telegram message IDs, native identities or infrastructure.
 
 ## Verification
 
-Full CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets`. This repository has no production deploy target, so Validate for Deploy is not applicable at bootstrap. Add deploy preflight when a real release package/configuration exists. CI never deploys.
+Full CI runs Rust format, Clippy and tests. A later deployable package requires distinct Validate for Deploy checks. Neither pipeline may deploy by itself.
 
-## License
-
-MPL-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Licensed MPL-2.0. See LICENSE and NOTICE.
 
 ---
 
