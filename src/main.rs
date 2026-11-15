@@ -6,7 +6,7 @@
 use nilx_one_bot::providers::telegram::run_test_bot;
 use tracing_subscriber::EnvFilter;
 
-fn test_token(mode: &str, token: &str) -> Result<&str, &'static str> {
+fn test_token<'a>(mode: &str, token: &'a str) -> Result<&'a str, &'static str> {
     if mode != "test" {
         return Err("BOT_RUN_MODE must be test; production polling is not supported");
     }
