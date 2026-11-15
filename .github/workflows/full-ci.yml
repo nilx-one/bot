@@ -32,3 +32,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Tests
         run: cargo test --all-targets
+      # Temporary delivery step: expose Cargo.lock in CI as base64 so the
+      # lockfile may be committed without floating host dependency resolution.
+      # Cargo.lock contains only public package names, versions and checksums.
+      - name: Export Cargo.lock for bootstrap
+        run: |
+          printf 'BOT_CARGO_LOCK_BEGIN\n'
+          base64 -w 0 Cargo.lock
+          printf '\nBOT_CARGO_LOCK_END\n'
