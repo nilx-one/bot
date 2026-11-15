@@ -1,85 +1,61 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Telegram chat adapter. Mini App remains the shared Web product hosted
-//! at nilx.one; opening it is not a second game-client activation.
+//! Telegram transport for the independent text client.
+//! The Web Mini App remains in nilx-one/web but is not the play path here.
 
-use teloxide::{
-    prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo},
-};
-use url::Url;
+use teloxide::{prelude::*, types::Message};
 
-use crate::application::{PublicAction, classify_message};
+use crate::application::{classify_message, public_reply};
 
-pub const MINI_APP_URL: &str = "https://nilx.one/telegram/";
-
+/// No group, bot-originated or forwarded command may become a product action.
 #[must_use]
-pub fn mini_app_keyboard() -> InlineKeyboardMarkup {
-    let url = Url::parse(MINI_APP_URL).expect("canonical Telegram Mini App URL must be valid");
-    InlineKeyboardMarkup::new([[InlineKeyboardButton::web_app(
-        "Open 0x1",
-        WebAppInfo { url },
-    )]])
+pub const fn permits_private_command(
+    private_chat: bool,
+    human_sender: bool,
+    forwarded: bool,
+) -> bool {
+    private_chat && human_sender && !forwarded
 }
 
 async fn handle_message(bot: Bot, message: Message) -> ResponseResult<()> {
-    // Never treat a forum/group sender, forwarded text, or anonymous sender as
-    // an authenticated Bond. Only private chats are handled by this slice.
-    if !message.chat.is_private() || message.from.as_ref().is_none_or(|sender| sender.is_bot) {
+    let human_sender = message.from.as_ref().is_some_and(|sender| !sender.is_bot);
+    if !permits_private_command(
+        message.chat.is_private(),
+        human_sender,
+        message.forward_origin().is_some(),
+    ) {
         return Ok(());
     }
 
-    match classify_message(message.text().unwrap_or_default()) {
-        PublicAction::OpenMiniApp => {
-            bot.send_message(message.chat.id, "0x1 · Відкрити Mini App")
-                .reply_markup(mini_app_keyboard())
-                .await?;
-        }
-        PublicAction::Help => {
-            bot.send_message(
-                message.chat.id,
-                "Відкрийте 0x1 через /open. Дії з Bond доступні через активну сесію 0x1.",
-            )
-            .reply_markup(mini_app_keyboard())
-            .await?;
-        }
-        PublicAction::NeedsCore => {
-            bot.send_message(
-                message.chat.id,
-                "Ця команда поки недоступна в тестовому боті. Відкрийте 0x1 через /open.",
-            )
-            .reply_markup(mini_app_keyboard())
-            .await?;
-        }
-        PublicAction::Ignore => {}
+    if let Some(text) = public_reply(classify_message(message.text().unwrap_or_default())) {
+        bot.send_message(message.chat.id, text).await?;
     }
     Ok(())
 }
 
-/// Only explicitly activated test deployments may poll. The production bot
-/// remains solely owned by the existing Web identity process until cutover.
+/// Only an isolated test bot may poll; no production token or gameplay writes.
 pub async fn run_test_bot(token: String) {
-    let bot = Bot::new(token);
-    teloxide::repl(bot, handle_message).await;
+    teloxide::repl(Bot::new(token), handle_message).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn open_uses_an_embedded_telegram_web_app_button() {
-        let keyboard = serde_json::to_value(mini_app_keyboard()).expect("telegram markup");
-        assert_eq!(
-            keyboard,
-            json!({
-                "inline_keyboard": [[{
-                    "text": "Open 0x1",
-                    "web_app": {"url": MINI_APP_URL}
-                }]]
-            })
-        );
+    fn private_human_original_message_is_the_only_accepted_source() {
+        assert!(permits_private_command(true, true, false));
+        assert!(!permits_private_command(false, true, false));
+        assert!(!permits_private_command(true, false, false));
+        assert!(!permits_private_command(true, true, true));
+    }
+
+    #[test]
+    fn text_responses_never_send_a_web_app_button() {
+        for command in ["/start", "/Open", "/help", "/inventory"] {
+            let text = public_reply(classify_message(command)).unwrap();
+            assert!(!text.contains("https://nilx.one/telegram/"));
+        }
     }
 }
