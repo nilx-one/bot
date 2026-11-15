@@ -38,14 +38,27 @@ mod tests {
     #[test]
     fn publicly_safe_commands_do_not_need_a_bond() {
         assert_eq!(classify_message("/open"), PublicAction::OpenMiniApp);
-        assert_eq!(classify_message("/open@nilxone_bot"), PublicAction::OpenMiniApp);
-        assert_eq!(classify_message("/start payload"), PublicAction::OpenMiniApp);
+        assert_eq!(
+            classify_message("/open@nilxone_bot"),
+            PublicAction::OpenMiniApp
+        );
+        assert_eq!(
+            classify_message("/start payload"),
+            PublicAction::OpenMiniApp
+        );
         assert_eq!(classify_message("/help"), PublicAction::Help);
     }
 
     #[test]
     fn privileged_and_unknown_commands_do_not_execute() {
-        for command in ["/unlink", "/travel", "/set_position", "/whoami", "/go@nilxone_bot", "/admin"] {
+        for command in [
+            "/unlink",
+            "/travel",
+            "/set_position",
+            "/whoami",
+            "/go@nilxone_bot",
+            "/admin",
+        ] {
             assert_eq!(classify_message(command), PublicAction::NeedsCore);
         }
     }
