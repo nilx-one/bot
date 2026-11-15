@@ -72,8 +72,19 @@ mod tests {
     #[test]
     fn help_and_unavailable_are_text_only() {
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
-        assert!(public_reply(PublicAction::Help).unwrap().contains("Допомога"));
-        for command in ["/unlink", "/travel", "/set_position", "/inventory", "/avaia", "/admin"] {
+        assert!(
+            public_reply(PublicAction::Help)
+                .unwrap()
+                .contains("Допомога")
+        );
+        for command in [
+            "/unlink",
+            "/travel",
+            "/set_position",
+            "/inventory",
+            "/avaia",
+            "/admin",
+        ] {
             assert_eq!(classify_message(command), PublicAction::NeedsCore);
             let reply = public_reply(classify_message(command)).unwrap();
             assert!(reply.contains("Core Gateway"));
