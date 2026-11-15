@@ -9,6 +9,8 @@ pub enum PublicAction {
     /// Enter the text experience, without opening the Web Mini App.
     EnterTextClient,
     Help,
+    /// Requires a server-issued, single-use AIS browser transaction.
+    StartLogin,
     /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
@@ -27,6 +29,7 @@ pub fn classify_message(text: &str) -> PublicAction {
     match name.as_str() {
         "/start" | "/open" => PublicAction::EnterTextClient,
         "/help" => PublicAction::Help,
+        "/login" => PublicAction::StartLogin,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,
     }
@@ -48,6 +51,7 @@ pub const fn public_reply(action: PublicAction) -> Option<&'static str> {
              /help — допомога\n\
              Інвентар, Bond, Avaia та інші дії стануть доступні після AIS і Core Gateway.",
         ),
+        PublicAction::StartLogin => None,
         PublicAction::NeedsCore => Some(
             "Ця команда поки недоступна: потрібні AIS-авторизація та Core Gateway. Дані 0x1 не змінено.",
         ),
@@ -71,6 +75,8 @@ mod tests {
 
     #[test]
     fn help_and_unavailable_are_text_only() {
+        assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
+        assert_eq!(public_reply(PublicAction::StartLogin), None);
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
         assert!(
             public_reply(PublicAction::Help)
