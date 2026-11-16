@@ -38,80 +38,29 @@ pub fn classify_message(text: &str) -> PublicAction {
     }
 }
 
-/// Text replies for unauthenticated bootstrap commands. A future authorized
-/// Core answer replaces NeedsCore; no Web button, invented data or action.
-#[must_use]
-pub const fn public_reply(action: PublicAction) -> Option<&'static str> {
-    match action {
-        PublicAction::EnterTextClient => Some(
-            "0x1 · Текстовий клієнт\n\
-             Тут можна користуватися 0x1 без карти.\n\
-             /login — AIS · /subscription — підписка · /help — допомога.",
-        ),
-        PublicAction::Help => Some(
-            "0x1 · Допомога\n\
-             /start — відкрити текстовий клієнт\n\
-             /help — допомога\n\
-             /subscription — підписка\n\
-             Інвентар, Bond, Avaia та інші дії стануть доступні після AIS і Core Gateway.",
-        ),
-        PublicAction::StartLogin | PublicAction::Subscription => None,
-        PublicAction::NeedsCore => Some(
-            "Ця команда поки недоступна: потрібні AIS-авторизація та Core Gateway. Дані 0x1 не змінено.",
-        ),
-        PublicAction::Ignore => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn text_entry_is_not_the_web_mini_app() {
+    fn commands_are_case_insensitive_and_do_not_open_web() {
         for command in ["/start", "/open", "/Open", "/START", "/open@nilxone_bot"] {
             assert_eq!(classify_message(command), PublicAction::EnterTextClient);
-            let reply = public_reply(classify_message(command)).unwrap();
-            assert!(reply.contains("Текстовий клієнт"));
-            assert!(!reply.contains("nilx.one/telegram"));
         }
+        assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
+        assert_eq!(classify_message("/HELP"), PublicAction::Help);
+        assert_eq!(classify_message("/SUBSCRIPTION"), PublicAction::Subscription);
     }
 
     #[test]
-    fn help_and_unavailable_are_text_only() {
-        assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
-        assert_eq!(public_reply(PublicAction::StartLogin), None);
-        assert_eq!(classify_message("/HELP"), PublicAction::Help);
-        assert_eq!(
-            classify_message("/subscription"),
-            PublicAction::Subscription
-        );
-        assert_eq!(public_reply(PublicAction::Subscription), None);
-        assert!(
-            public_reply(PublicAction::Help)
-                .unwrap()
-                .contains("Допомога")
-        );
+    fn unsupported_commands_need_authorized_core_and_text_is_not_a_command() {
         for command in [
-            "/unlink",
-            "/travel",
-            "/set_position",
-            "/inventory",
-            "/avaia",
-            "/admin",
+            "/unlink", "/travel", "/set_position", "/inventory", "/avaia", "/admin",
         ] {
             assert_eq!(classify_message(command), PublicAction::NeedsCore);
-            let reply = public_reply(classify_message(command)).unwrap();
-            assert!(reply.contains("Core Gateway"));
-            assert!(!reply.contains("http"));
         }
-    }
-
-    #[test]
-    fn ordinary_text_has_no_implicit_authority() {
         for input in ["hello", "лети на золоті", "", "   "] {
             assert_eq!(classify_message(input), PublicAction::Ignore);
-            assert_eq!(public_reply(classify_message(input)), None);
         }
     }
 }
