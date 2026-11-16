@@ -597,6 +597,37 @@ mod transport_integration_tests {
     }
 
     #[tokio::test]
+    async fn real_handler_ignores_groups_bots_and_forwards_without_api_calls() {
+        let (bot, server) = telegram_api(vec![]);
+        let (state, path) = temp_ui();
+
+        let mut group = serde_json::to_value(incoming(20, "/start")).unwrap();
+        group["chat"]["type"] = json!("supergroup");
+        group["chat"]["title"] = json!("test group");
+
+        let mut bot_sender = serde_json::to_value(incoming(21, "/start")).unwrap();
+        bot_sender["from"]["is_bot"] = json!(true);
+
+        let mut forwarded = serde_json::to_value(incoming(22, "/start")).unwrap();
+        forwarded["forward_origin"] = json!({
+            "type": "user",
+            "date": 1700000000,
+            "sender_user": {"id": 99, "is_bot": false, "first_name": "Elsewhere"}
+        });
+
+        for update in [group, bot_sender, forwarded] {
+            let message: Message = serde_json::from_value(update).unwrap();
+            handle_message(bot.clone(), message, state.clone(), None)
+                .await
+                .unwrap();
+        }
+        assert!(state.lock().await.panels.is_empty());
+        assert!(server.join().unwrap().is_empty());
+        // The handler never saved a panel for an unauthorized source.
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn real_callback_handler_edits_only_a_fresh_authorized_panel() {
         let (bot, server) = telegram_api(vec![
             "answerCallbackQuery",
