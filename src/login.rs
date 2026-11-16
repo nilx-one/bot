@@ -37,6 +37,18 @@ struct StartRequest {
     message_id: i32,
 }
 
+impl StartRequest {
+    fn from_verified_update(provider_actor_id: u64, chat_id: i64, message_id: i32) -> Self {
+        Self {
+            version: 1,
+            provider: "telegram",
+            provider_actor_id,
+            chat_id,
+            message_id,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct StartResponse {
     authorization_url: String,
@@ -107,17 +119,16 @@ impl LoginGateway {
         chat_id: i64,
         message_id: i32,
     ) -> Result<Url, LoginError> {
+        // Never issue a login transaction without a real Telegram message.
+        if message_id <= 0 {
+            return Err(LoginError::InvalidResponse);
+        }
+        let request = StartRequest::from_verified_update(provider_actor_id, chat_id, message_id);
         let result = self
             .http
             .post(self.start_url.clone())
             .bearer_auth(&self.service_token)
-            .json(&StartRequest {
-                version: 1,
-                provider: "telegram",
-                provider_actor_id,
-                chat_id,
-                message_id,
-            })
+            .json(&request)
             .send()
             .await
             .map_err(|_| LoginError::Unavailable)?;
@@ -232,6 +243,29 @@ mod tests {
             &Url::parse("https://auth.aiaiaiai.org/0x1").unwrap(),
             CALLBACK
         ));
+    }
+
+    #[test]
+    fn login_start_payload_uses_the_verified_message_not_the_panel_id() {
+        let request = StartRequest::from_verified_update(42, 100, 345);
+        let body = serde_json::to_value(request).unwrap();
+        assert_eq!(body["version"], 1);
+        assert_eq!(body["provider"], "telegram");
+        assert_eq!(body["provider_actor_id"], 42);
+        assert_eq!(body["chat_id"], 100);
+        assert_eq!(body["message_id"], 345);
+    }
+
+    #[tokio::test]
+    async fn login_start_rejects_invalid_message_id_before_network() {
+        let gateway = LoginGateway::new(
+            "https://example.com/api/v1/telegram/login/start",
+            "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+            CALLBACK.into(),
+        )
+        .unwrap();
+        assert_eq!(gateway.start(42, 100, 0).await, Err(LoginError::InvalidResponse));
+        assert_eq!(gateway.start(42, 100, -1).await, Err(LoginError::InvalidResponse));
     }
 
     #[test]
