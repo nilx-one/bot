@@ -264,8 +264,14 @@ mod tests {
             CALLBACK.into(),
         )
         .unwrap();
-        assert_eq!(gateway.start(42, 100, 0).await, Err(LoginError::InvalidResponse));
-        assert_eq!(gateway.start(42, 100, -1).await, Err(LoginError::InvalidResponse));
+        assert_eq!(
+            gateway.start(42, 100, 0).await,
+            Err(LoginError::InvalidResponse)
+        );
+        assert_eq!(
+            gateway.start(42, 100, -1).await,
+            Err(LoginError::InvalidResponse)
+        );
     }
 
     #[test]
