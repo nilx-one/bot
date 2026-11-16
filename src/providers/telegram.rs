@@ -575,7 +575,7 @@ mod transport_integration_tests {
             requests[3].1["text"]
                 .as_str()
                 .unwrap()
-                .contains("Інвентар недоступний")
+                .contains("Жодних даних не змінено")
         );
         assert!(
             requests[4].1["text"]
