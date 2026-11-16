@@ -81,7 +81,11 @@ impl MarketGateway {
         }
     }
 
-    fn new(origin: &str, public_token: String, assertion_secret: String) -> Result<Self, MarketError> {
+    fn new(
+        origin: &str,
+        public_token: String,
+        assertion_secret: String,
+    ) -> Result<Self, MarketError> {
         let origin = Url::parse(origin).map_err(|_| MarketError::InvalidConfiguration)?;
         if origin.scheme() != "https"
             || origin.host_str().is_none()
@@ -100,11 +104,18 @@ impl MarketGateway {
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(|_| MarketError::InvalidConfiguration)?;
-        Ok(Self { http, origin, public_token, assertion_secret })
+        Ok(Self {
+            http,
+            origin,
+            public_token,
+            assertion_secret,
+        })
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, MarketError> {
-        self.origin.join(path).map_err(|_| MarketError::InvalidConfiguration)
+        self.origin
+            .join(path)
+            .map_err(|_| MarketError::InvalidConfiguration)
     }
 
     /// Resolve one Telegram provider identity to Market's verified customer.
@@ -112,10 +123,16 @@ impl MarketGateway {
     /// callback body. Market may create its own customer record here.
     async fn customer_id(&self, actor: VerifiedTelegramActor) -> Result<String, MarketError> {
         let url = self.endpoint("/v1/auth/external")?;
-        let response = self.http.post(url)
+        let response = self
+            .http
+            .post(url)
             .bearer_auth(&self.public_token)
-            .json(&json!({"provider": "telegram", "provider_user_id": actor.subject_id.to_string()}))
-            .send().await.map_err(|_| MarketError::Unavailable)?;
+            .json(
+                &json!({"provider": "telegram", "provider_user_id": actor.subject_id.to_string()}),
+            )
+            .send()
+            .await
+            .map_err(|_| MarketError::Unavailable)?;
         let body = Self::parse_response(response).await?;
         body.pointer("/data/id")
             .and_then(Value::as_str)
@@ -139,7 +156,8 @@ impl MarketGateway {
             "provider_user_id": actor.subject_id.to_string(),
             "iat": now,
             "exp": now.saturating_add(ASSERTION_SECONDS),
-        })).map_err(|_| MarketError::InvalidResponse)?;
+        }))
+        .map_err(|_| MarketError::InvalidResponse)?;
         let encoded = URL_SAFE_NO_PAD.encode(payload);
         let message = format!("{DOMAIN}{encoded}");
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.assertion_secret.as_bytes());
@@ -152,7 +170,10 @@ impl MarketGateway {
         if !response.status().is_success() {
             return Err(MarketError::Unavailable);
         }
-        let body = response.bytes().await.map_err(|_| MarketError::Unavailable)?;
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| MarketError::Unavailable)?;
         if body.len() > MAX_RESPONSE_BYTES {
             return Err(MarketError::InvalidResponse);
         }
@@ -173,22 +194,32 @@ impl MarketGateway {
             .as_secs();
         let assertion = self.customer_assertion(&market_user, actor, now)?;
         let url = self.endpoint(&format!("/v1/issuer-accounts/{ISSUER}"))?;
-        let response = self.http.get(url)
+        let response = self
+            .http
+            .get(url)
             .bearer_auth(&self.public_token)
             .header("X-Market-Customer-Assertion", assertion)
-            .send().await.map_err(|_| MarketError::Unavailable)?;
+            .send()
+            .await
+            .map_err(|_| MarketError::Unavailable)?;
         let body = Self::parse_response(response).await?;
         if body.pointer("/data/type").and_then(Value::as_str) != Some("issuer_account")
             || body.pointer("/data/id").and_then(Value::as_str) != Some(ISSUER)
         {
             return Err(MarketError::InvalidResponse);
         }
-        match body.pointer("/data/attributes/linked").and_then(Value::as_bool) {
+        match body
+            .pointer("/data/attributes/linked")
+            .and_then(Value::as_bool)
+        {
             Some(false) => Ok(AccountLink::SignInRequired),
-            Some(true) => body.pointer("/data/attributes/pub_dress")
+            Some(true) => body
+                .pointer("/data/attributes/pub_dress")
                 .and_then(Value::as_str)
                 .filter(|id| id.starts_with("0x") && id.len() <= 128)
-                .map(|pub_dress| AccountLink::Linked { pub_dress: pub_dress.to_owned() })
+                .map(|pub_dress| AccountLink::Linked {
+                    pub_dress: pub_dress.to_owned(),
+                })
                 .ok_or(MarketError::InvalidResponse),
             None => Err(MarketError::InvalidResponse),
         }
@@ -205,7 +236,8 @@ mod tests {
             "https://0xda-market.nilx.one/",
             "test-public-token".to_owned(),
             "test-assertion-secret-that-is-longer-than-32-bytes".to_owned(),
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -227,14 +259,18 @@ mod tests {
     #[test]
     fn assertion_matches_markets_documented_hmac_and_subject() {
         let gateway = gateway();
-        let actor = VerifiedTelegramActor::from_original_private_update(42, true, true, false).unwrap();
-        let assertion = gateway.customer_assertion("market-uuid", actor, 100).unwrap();
+        let actor =
+            VerifiedTelegramActor::from_original_private_update(42, true, true, false).unwrap();
+        let assertion = gateway
+            .customer_assertion("market-uuid", actor, 100)
+            .unwrap();
         let mut segments = assertion.split('.');
         assert_eq!(segments.next(), Some("v1"));
         let encoded = segments.next().unwrap();
         let received_mac = segments.next().unwrap();
         assert!(segments.next().is_none());
-        let json: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+        let json: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
         assert_eq!(json["user_id"], "market-uuid");
         assert_eq!(json["provider"], "telegram");
         assert_eq!(json["provider_user_id"], "42");
@@ -242,7 +278,8 @@ mod tests {
         assert_eq!(json["exp"], 160);
         let key = hmac::Key::new(hmac::HMAC_SHA256, gateway.assertion_secret.as_bytes());
         let expected_message = format!("{DOMAIN}{encoded}");
-        let bytes: Vec<u8> = (0..received_mac.len()).step_by(2)
+        let bytes: Vec<u8> = (0..received_mac.len())
+            .step_by(2)
             .map(|i| u8::from_str_radix(&received_mac[i..i + 2], 16).unwrap())
             .collect();
         hmac::verify(&key, expected_message.as_bytes(), &bytes).unwrap();
@@ -250,13 +287,21 @@ mod tests {
 
     #[test]
     fn configuration_rejects_plaintext_and_weak_assertion_key() {
-        assert!(MarketGateway::new(
-            "http://0xda-market.nilx.one/",
-            "token".into(), "a-strong-test-secret-that-is-over-32-characters".into()
-        ).is_err());
-        assert!(MarketGateway::new(
-            "https://0xda-market.nilx.one/",
-            "token".into(), "short".into()
-        ).is_err());
+        assert!(
+            MarketGateway::new(
+                "http://0xda-market.nilx.one/",
+                "token".into(),
+                "a-strong-test-secret-that-is-over-32-characters".into()
+            )
+            .is_err()
+        );
+        assert!(
+            MarketGateway::new(
+                "https://0xda-market.nilx.one/",
+                "token".into(),
+                "short".into()
+            )
+            .is_err()
+        );
     }
 }
