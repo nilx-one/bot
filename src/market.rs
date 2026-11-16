@@ -95,7 +95,7 @@ impl MarketGateway {
             || origin.fragment().is_some()
             || origin.path() != "/"
             || public_token.trim().is_empty()
-            || assertion_secret.as_bytes().len() < 32
+            || assertion_secret.len() < 32
         {
             return Err(MarketError::InvalidConfiguration);
         }
