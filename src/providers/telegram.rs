@@ -408,7 +408,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod transport_integration_tests {
     use super::*;
@@ -427,15 +426,16 @@ mod transport_integration_tests {
     ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let bot = Bot::new("123:TEST").set_api_url(
-            url::Url::parse(&format!("http://{address}/")).unwrap(),
-        );
+        let bot = Bot::new("123:TEST")
+            .set_api_url(url::Url::parse(&format!("http://{address}/")).unwrap());
 
         let handle = thread::spawn(move || {
             let mut requests = Vec::new();
             for method in expected {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
                 let mut bytes = Vec::new();
                 let headers_end = loop {
                     let mut buffer = [0; 8192];
@@ -448,7 +448,10 @@ mod transport_integration_tests {
                 };
                 let headers = std::str::from_utf8(&bytes[..headers_end]).unwrap();
                 let request_path = headers.split_whitespace().nth(1).unwrap().to_owned();
-                assert!(request_path.ends_with(method), "unexpected method {request_path}");
+                assert!(
+                    request_path.ends_with(method),
+                    "unexpected method {request_path}"
+                );
                 let size: usize = headers
                     .lines()
                     .find_map(|line| {
@@ -463,10 +466,8 @@ mod transport_integration_tests {
                     assert!(n != 0, "unexpected EOF before JSON body");
                     bytes.extend_from_slice(&buffer[..n]);
                 }
-                let body: Value = serde_json::from_slice(
-                    &bytes[headers_end..headers_end + size],
-                )
-                .unwrap();
+                let body: Value =
+                    serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
                 let result = if method == "sendMessage" {
@@ -529,7 +530,10 @@ mod transport_integration_tests {
             "nilx-bot-telegram-handler-{}-{nonce}.json",
             std::process::id()
         ));
-        (Arc::new(Mutex::new(UiStore::open(path.clone()).unwrap())), path)
+        (
+            Arc::new(Mutex::new(UiStore::open(path.clone()).unwrap())),
+            path,
+        )
     }
 
     #[tokio::test]
@@ -541,11 +545,7 @@ mod transport_integration_tests {
             "editMessageText",
         ]);
         let (state, path) = temp_ui();
-        for (message_id, text) in [
-            (10, "/start"),
-            (11, "/SUBSCRIPTION"),
-            (12, "/inventory"),
-        ] {
+        for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/inventory")] {
             handle_message(bot.clone(), incoming(message_id, text), state.clone(), None)
                 .await
                 .unwrap();
@@ -562,9 +562,24 @@ mod transport_integration_tests {
             assert_eq!(method, "editMessageText");
             assert_eq!(body["message_id"], 100);
         }
-        assert!(requests[1].1["text"].as_str().unwrap().contains("Підписка недоступна"));
-        assert!(requests[2].1["text"].as_str().unwrap().contains("Інвентар недоступний"));
-        assert!(requests[3].1["text"].as_str().unwrap().contains("Сесія Bond не підтверджена"));
+        assert!(
+            requests[1].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Підписка недоступна")
+        );
+        assert!(
+            requests[2].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Інвентар недоступний")
+        );
+        assert!(
+            requests[3].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Сесія Bond не підтверджена")
+        );
         let store = state.lock().await;
         assert_eq!(store.panels.get(&42).unwrap().message_id, 100);
         assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Home);
@@ -592,14 +607,9 @@ mod transport_integration_tests {
         )
         .await
         .unwrap();
-        handle_callback(
-            bot,
-            callback(100, "ui:0:subscription"),
-            state.clone(),
-            None,
-        )
-        .await
-        .unwrap();
+        handle_callback(bot, callback(100, "ui:0:subscription"), state.clone(), None)
+            .await
+            .unwrap();
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].0, "answerCallbackQuery");
