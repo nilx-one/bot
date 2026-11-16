@@ -212,6 +212,13 @@ async fn handle_message(
         return Ok(());
     }
 
+    // The first /start already sent the Home panel via ensure_panel. Editing
+    // the just-sent identical screen adds a needless Telegram API request and
+    // can race with the new panel before the user interacts.
+    if is_first_panel && action == PublicAction::EnterTextClient {
+        return Ok(());
+    }
+
     match action {
         PublicAction::EnterTextClient => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
@@ -545,7 +552,6 @@ mod transport_integration_tests {
             "editMessageText",
             "editMessageText",
             "editMessageText",
-            "editMessageText",
         ]);
         let (state, path) = temp_ui();
         for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/inventory")] {
@@ -553,32 +559,32 @@ mod transport_integration_tests {
                 .await
                 .unwrap();
         }
-        // The fifth API call is an actual return to Home, not another send.
+        // The fourth API call is an actual return to Home, not another send.
         handle_message(bot, incoming(13, "/start"), state.clone(), None)
             .await
             .unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 5);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].0, "sendMessage");
         for (method, body) in requests.iter().skip(1) {
             assert_eq!(method, "editMessageText");
             assert_eq!(body["message_id"], 100);
         }
         assert!(
-            requests[2].1["text"]
+            requests[1].1["text"]
                 .as_str()
                 .unwrap()
                 .contains("Підписка недоступна")
         );
         assert!(
-            requests[3].1["text"]
+            requests[2].1["text"]
                 .as_str()
                 .unwrap()
                 .contains("Жодних даних не змінено")
         );
         assert!(
-            requests[4].1["text"]
+            requests[3].1["text"]
                 .as_str()
                 .unwrap()
                 .contains("Сесія Bond не підтверджена")
