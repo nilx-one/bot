@@ -1,9 +1,13 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Staged, read-only Market channel adapter for a verified Telegram sender.
+//! Staged, non-purchasing Market channel adapter for a verified Telegram sender.
 //! Core/Market own purchases: this adapter never debits seeds, activates an
 //! entitlement, or creates an issuer order without a reviewed Core permit.
+
+// The standalone adapter is intentionally not wired into the bot until the
+// Core active-session and Market channel-order contracts are implemented.
+#![allow(dead_code)]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
