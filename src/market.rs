@@ -203,6 +203,12 @@ impl MarketGateway {
             .await
             .map_err(|_| MarketError::Unavailable)?;
         let body = Self::parse_response(response).await?;
+        Self::parse_account_link(&body)
+    }
+
+    // The issuer directory returns its own public handle. Telegram does not
+    // impose the 0x1 pub_dress syntax on a Market-provided linked handle.
+    fn parse_account_link(body: &Value) -> Result<AccountLink, MarketError> {
         if body.pointer("/data/type").and_then(Value::as_str) != Some("issuer_account")
             || body.pointer("/data/id").and_then(Value::as_str) != Some(ISSUER)
         {
@@ -216,7 +222,7 @@ impl MarketGateway {
             Some(true) => body
                 .pointer("/data/attributes/pub_dress")
                 .and_then(Value::as_str)
-                .filter(|id| id.starts_with("0x") && id.len() <= 128)
+                .filter(|handle| !handle.is_empty() && handle.chars().count() <= 128)
                 .map(|pub_dress| AccountLink::Linked {
                     pub_dress: pub_dress.to_owned(),
                 })
@@ -283,6 +289,76 @@ mod tests {
             .map(|i| u8::from_str_radix(&received_mac[i..i + 2], 16).unwrap())
             .collect();
         hmac::verify(&key, expected_message.as_bytes(), &bytes).unwrap();
+    }
+
+    #[test]
+    fn market_directory_accepts_authoritative_non_hex_handles() {
+        let linked = json!({
+            "data": {
+                "type": "issuer_account",
+                "id": "0x1",
+                "attributes": {"linked": true, "pub_dress": "zero"}
+            }
+        });
+        assert_eq!(
+            MarketGateway::parse_account_link(&linked),
+            Ok(AccountLink::Linked {
+                pub_dress: "zero".to_owned()
+            })
+        );
+        let mut hexadecimal = linked.clone();
+        hexadecimal["data"]["attributes"]["pub_dress"] = json!("0x0sky");
+        assert_eq!(
+            MarketGateway::parse_account_link(&hexadecimal),
+            Ok(AccountLink::Linked {
+                pub_dress: "0x0sky".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn market_directory_rejects_missing_or_invalid_authority() {
+        let unlinked = json!({
+            "data": {
+                "type": "issuer_account",
+                "id": "0x1",
+                "attributes": {"linked": false}
+            }
+        });
+        assert_eq!(
+            MarketGateway::parse_account_link(&unlinked),
+            Ok(AccountLink::SignInRequired)
+        );
+        let mut missing_linked = unlinked.clone();
+        missing_linked["data"]["attributes"] = json!({});
+        assert_eq!(
+            MarketGateway::parse_account_link(&missing_linked),
+            Err(MarketError::InvalidResponse)
+        );
+        let mut missing_handle = unlinked.clone();
+        missing_handle["data"]["attributes"]["linked"] = json!(true);
+        assert_eq!(
+            MarketGateway::parse_account_link(&missing_handle),
+            Err(MarketError::InvalidResponse)
+        );
+        let mut empty_handle = missing_handle.clone();
+        empty_handle["data"]["attributes"]["pub_dress"] = json!("");
+        assert_eq!(
+            MarketGateway::parse_account_link(&empty_handle),
+            Err(MarketError::InvalidResponse)
+        );
+        let mut oversized_handle = missing_handle.clone();
+        oversized_handle["data"]["attributes"]["pub_dress"] = json!("x".repeat(129));
+        assert_eq!(
+            MarketGateway::parse_account_link(&oversized_handle),
+            Err(MarketError::InvalidResponse)
+        );
+        let mut wrong_issuer = unlinked;
+        wrong_issuer["data"]["id"] = json!("0xda-market");
+        assert_eq!(
+            MarketGateway::parse_account_link(&wrong_issuer),
+            Err(MarketError::InvalidResponse)
+        );
     }
 
     #[test]
