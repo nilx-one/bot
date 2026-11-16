@@ -472,7 +472,7 @@ mod transport_integration_tests {
                     serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
-                let result = if method == "sendMessage" {
+                let result = if method == "sendMessage" || method == "editMessageText" {
                     json!({
                         "message_id": 100,
                         "date": 1700000000,
