@@ -34,6 +34,48 @@ Forwarded messages, bot senders and groups are not eligible command sources. No 
 - On a future verified Core login-completion event, the bot must delete *observed and deletable* prior messages best-effort (Telegram limits history deletion, including a 48-hour window), send and pin one new home panel, then edit that same panel. Never claim a whole chat was cleared. The Core callback and this post-auth transition are separate dependent work, not operational in this test UI.
 - A restarted bot reuses the stored panel ID when available. If Telegram deleted or invalidated that message, a failure is logged rather than silently producing multiple panels. Operational recovery will require a reviewed explicit reset path.
 
+## Special for seeds — verified Telegram Market channel (staged)
+
+The initial Market integration is **not a purchase button**. It establishes
+verified Telegram-to-Market customer identity and looks up whether that Market
+customer's provider account is linked to an existing 0x1 Bond. It uses Market's
+documented `POST /v1/auth/external` and `GET /v1/issuer-accounts/0x1`
+contracts, with a short-lived signed `X-Market-Customer-Assertion` backed by
+HMAC-SHA256. **The POST is an identity write:** Market may create its own
+local customer account when that provider first authenticates. It does not
+create a Bond, debit seeds or issue a subscription. This staged adapter is
+currently unwired, so merely deploying PR #6 will not register users.
+
+All settings are optional **only together**, for a trusted staging adapter:
+
+~~~sh
+# No credentials are needed for the existing isolated test bot.
+# MARKET_CHANNEL_ORIGIN=https://0xda-market.nilx.one/
+# MARKET_CHANNEL_PUBLIC_TOKEN=<market-channel-api-token>
+# MARKET_CHANNEL_ASSERTION_SECRET=<market-channel-signing-secret-at-least-32-bytes>
+~~~
+
+Market's issuer directory owns its own public-handle grammar: an account may
+be linked as `zero` or `0x0sky`; the bot does not impose a `0x` prefix.
+A missing, invalid or unavailable directory response is not an absent
+subscription or permission to buy.
+
+The channel secret is shared **only** with the authenticated Market verifier.
+Do not use the issuer token or `NILX_BROWSER_HANDOFF_TOKEN` as the channel
+secret. A Telegram username or arbitrary provider ID cannot supply a customer
+assertion. The adapter remains unconnected to the live bot panel until the
+trusted Core product-session gate and provider-link continuity are reviewed.
+
+**No orders are submitted here.** Completing purchase requires a Core-authorized
+active client, Market's verified channel-user check, current active Special
+seeds prices, explicit confirmation, idempotent `POST /v1/issuer-orders`,
+order status, cancellation/recovery and issuer worker fulfillment. Market's
+`ENABLE_ISSUER_ORDER_ROUTES`, Core's `MARKET_ISSUER_WORKER`, catalog SKU
+activation, production secrets and deploy remain disabled until independent
+E2E evidence and explicit authorization. Read the
+[Market issuer-order contract](https://github.com/0xda-market/core/blob/master/docs/architecture/issuer-orders.md)
+and [Core's subscription contract](https://github.com/nilx-one/core/blob/master/docs/subscriptions.md).
+
 ## Text-client feature scope
 
 The finished text client must expose **all existing Core product capabilities**, including information about Bond/Avaia, inventory and items, subscriptions, organizations and eligible travel. It uses typed Core read/actions and parity tests, not a second set of rules or language-model inference. Work is tracked in [Core #123](https://github.com/nilx-one/core/issues/123) and [Core #124](https://github.com/nilx-one/core/issues/124).
