@@ -20,6 +20,7 @@ const MAX_TRACKED_MESSAGES: usize = 96;
 pub enum Screen {
     Home,
     Login,
+    MiniApp,
     Subscription,
     Bond,
     Avaia,
@@ -36,6 +37,7 @@ impl Screen {
         match self {
             Self::Home => "home",
             Self::Login => "login",
+            Self::MiniApp => "mini_app",
             Self::Subscription => "subscription",
             Self::Bond => "bond",
             Self::Avaia => "avaia",
@@ -52,6 +54,7 @@ impl Screen {
         match key {
             "home" => Some(Self::Home),
             "login" => Some(Self::Login),
+            "mini_app" => Some(Self::MiniApp),
             "subscription" => Some(Self::Subscription),
             "bond" => Some(Self::Bond),
             "avaia" => Some(Self::Avaia),
@@ -166,6 +169,10 @@ impl Panel {
                     "AIS-авторизація недоступна або потребує нового посилання. Натисніть «Отримати посилання»."
                 },
             ),
+            Screen::MiniApp => (
+                "0x1 · Telegram Mini App",
+                "Mini App недоступний: Core не підтвердив спільну логічну Telegram-сесію для цього Bond, host і пристрою. /open не змінює активний клієнт і не створює нової сесії. Дані 0x1 не змінено.",
+            ),
             Screen::Subscription => (
                 "0x1 · Підписка",
                 "Підписка недоступна: немає авторизованої проєкції Core Gateway.\nБот не визначає статус або термін дії підписки самостійно.",
@@ -192,7 +199,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — головний екран\n/login — AIS\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — головний екран\n/open — Mini App (потрібне підтвердження Core)\n/login — AIS\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",
@@ -226,6 +233,10 @@ impl Panel {
             Button::Navigate("AIS", Screen::Login),
             Button::Navigate("Допомога", Screen::Help),
         ]);
+        rows.push(vec![Button::Navigate(
+            "Mini App (недоступно)",
+            Screen::MiniApp,
+        )]);
         let _ = revision;
         View {
             text: format!("{title}\n\n{description}"),

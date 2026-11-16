@@ -1,10 +1,10 @@
-# 0x1 Bot — independent text client
+# 0x1 Bot — Telegram text client
 
 **Status:** isolated test transport with a single-message UI and optional AIS login-start; no verified Core product session, game writes, or production cutover yet.
 
 This repository is the **fourth 0x1 client**, and its first text-only client. The player uses 0x1 directly in a messenger conversation; there is no requirement to open a Web Mini App or a native app. The same Rust Core owns Bond, Avaia, inventory, interactions, sessions, progression, and spatial semantics across text and graphical clients.
 
-The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-one/web). It is an independent Web presentation and is not the gameplay fallback or shared login session for this text client. A future adapter may expose a deliberate link to Web without mixing identities, product sessions or authority.
+The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-one/web) as an independent **Web presentation**. The bot is an independently deployable text runtime, but chat and embedded Mini App target **one logical Telegram product client** only after Core verifies the same Bond, Telegram host, physical device and session-bound single-use proof. This is the proposed normative revision in [0x1 #90](https://github.com/nilx-one/0x1/pull/90), tracked in [bot #2](https://github.com/nilx-one/bot/issues/2); it is not yet operational.
 
 ## Ownership
 
@@ -17,7 +17,8 @@ The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-o
 
 Only a separate **test bot**, using Rust and Teloxide. Private, original human commands:
 
-- /start and /open: introduce the standalone text client.
+- /start: open the text client's main panel.
+- /open: request the embedded Mini App. Until Core supports the verified shared-session transition, show an explicit unavailable screen; never issue a bare Web App launch or silently activate a new session.
 - /help: explain basic commands and honest availability.
 - /login: optionally request an AIS authorization link from the trusted product Gateway; fail closed when unavailable.
 - Other slash commands: reply in text that a verified AIS identity and Core Gateway are required. No gameplay mutation.
@@ -26,7 +27,7 @@ Forwarded messages, bot senders and groups are not eligible command sources. No 
 
 ## Single-message Telegram UI
 
-- Only `/start`, `/login`, `/subscription` (singular), and optional `/help`/`/open` compatibility aliases are top-level entry points. Features such as Bond, Avaia, inventory, subscriptions, organizations and eligible travel are navigated via Inline Keyboard, **not** additional slash commands.
+- `/start`, `/login`, `/subscription`, `/help` and `/open` are top-level commands. `/open` is **not** a synonym for `/start`: it is the explicit (currently gated) Mini App transition. Features such as Bond, Avaia, inventory, subscriptions, organizations and eligible travel are navigated via Inline Keyboard, **not** additional slash commands.
 - The first private interaction sends one unpinned login panel. Subsequent commands and button presses call `editMessageText` for that same `message_id`; callbacks check sender, originating message and revision to reject stale presses.
 - The test adapter persists **presentation metadata only** in `BOT_UI_STATE_PATH` (default `bot-ui-state.json`): chat, owner, panel message ID, current screen and recently observed message IDs. It never persists an AIS authorization URL, password, token, game state, Core session or Bond identity.
 - `/subscription` is a navigation shortcut. Without a real verified Core session, its screen reports unavailability; it does not fabricate Special/Exclusive status. No arbitrary text prompts navigate the world.
@@ -80,7 +81,7 @@ and [Core's subscription contract](https://github.com/nilx-one/core/blob/master/
 
 The finished text client must expose **all existing Core product capabilities**, including information about Bond/Avaia, inventory and items, subscriptions, organizations and eligible travel. It uses typed Core read/actions and parity tests, not a second set of rules or language-model inference. Work is tracked in [Core #123](https://github.com/nilx-one/core/issues/123) and [Core #124](https://github.com/nilx-one/core/issues/124).
 
-AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/issues/3)). Bot chat has its own Core-controlled product client/session and must participate in Single Active Client rather than sharing the Mini App's browser session.
+AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/issues/3)). Core must verify the same Bond + Telegram host + physical device before chat and Mini App join the **same logical product session**; distinct surfaces keep different scoped credentials, and external browsers/other devices still obey Single Active Client. This Core continuity mechanism is pending [Core #122](https://github.com/nilx-one/core/issues/122).
 
 ## Optional AIS login (separate dependent PR)
 
