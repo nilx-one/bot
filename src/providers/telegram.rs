@@ -569,10 +569,12 @@ mod transport_integration_tests {
         assert_eq!(requests[0].0, "sendMessage");
         assert_eq!(requests[1].0, "editMessageText");
         assert_eq!(requests[1].1["message_id"], 100);
-        assert!(requests[1].1["text"]
-            .as_str()
-            .unwrap()
-            .contains("Core не підтвердив спільну логічну Telegram-сесію"));
+        assert!(
+            requests[1].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Core не підтвердив спільну логічну Telegram-сесію")
+        );
         let markup = requests[1].1["reply_markup"].to_string();
         assert!(!markup.contains("web_app"));
         assert!(!markup.contains("nilx.one/telegram"));
