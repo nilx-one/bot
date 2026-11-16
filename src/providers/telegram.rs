@@ -615,7 +615,12 @@ mod transport_integration_tests {
         assert_eq!(requests[0].0, "answerCallbackQuery");
         assert_eq!(requests[1].0, "editMessageText");
         assert_eq!(requests[2].0, "answerCallbackQuery");
-        assert!(requests[1].1["text"].as_str().unwrap().contains("Інвентар недоступний"));
+        assert!(
+            requests[1].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Інвентар недоступний")
+        );
         let store = state.lock().await;
         assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Inventory);
         assert_eq!(store.panels.get(&42).unwrap().revision, 1);
