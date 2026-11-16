@@ -1,6 +1,6 @@
 # 0x1 Bot — independent text client
 
-**Status:** isolated test bootstrap; no AIS login, game writes, or production cutover yet.
+**Status:** isolated test transport with a single-message UI and optional AIS login-start; no verified Core product session, game writes, or production cutover yet.
 
 This repository is the **fourth 0x1 client**, and its first text-only client. The player uses 0x1 directly in a messenger conversation; there is no requirement to open a Web Mini App or a native app. The same Rust Core owns Bond, Avaia, inventory, interactions, sessions, progression, and spatial semantics across text and graphical clients.
 
@@ -23,6 +23,16 @@ Only a separate **test bot**, using Rust and Teloxide. Private, original human c
 - Other slash commands: reply in text that a verified AIS identity and Core Gateway are required. No gameplay mutation.
 
 Forwarded messages, bot senders and groups are not eligible command sources. No command is automatically handed to the production Web Mini App. A command cannot create location truth or a BondChain.
+
+## Single-message Telegram UI
+
+- Only `/start`, `/login`, `/subscription` (singular), and optional `/help`/`/open` compatibility aliases are top-level entry points. Features such as Bond, Avaia, inventory, subscriptions, organizations and eligible travel are navigated via Inline Keyboard, **not** additional slash commands.
+- The first private interaction sends one unpinned login panel. Subsequent commands and button presses call `editMessageText` for that same `message_id`; callbacks check sender, originating message and revision to reject stale presses.
+- The test adapter persists **presentation metadata only** in `BOT_UI_STATE_PATH` (default `bot-ui-state.json`): chat, owner, panel message ID, current screen and recently observed message IDs. It never persists an AIS authorization URL, password, token, game state, Core session or Bond identity.
+- `/subscription` is a navigation shortcut. Without a real verified Core session, its screen reports unavailability; it does not fabricate Special/Exclusive status. No arbitrary text prompts navigate the world.
+- **Authentication completion remains blocked:** the Core-owned dedicated Telegram callback, verified product session and confirmed active-client handoff have not been implemented. Do not pin an authenticated panel, clear chat history or display Bond data based only on a browser redirect, Telegram sender ID or login-start URL.
+- On a future verified Core login-completion event, the bot must delete *observed and deletable* prior messages best-effort (Telegram limits history deletion, including a 48-hour window), send and pin one new home panel, then edit that same panel. Never claim a whole chat was cleared. The Core callback and this post-auth transition are separate dependent work, not operational in this test UI.
+- A restarted bot reuses the stored panel ID when available. If Telegram deleted or invalidated that message, a failure is logged rather than silently producing multiple panels. Operational recovery will require a reviewed explicit reset path.
 
 ## Special for seeds — verified Telegram Market channel (staged)
 
