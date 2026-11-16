@@ -47,6 +47,19 @@ fn markup(view: &View, revision: u64) -> InlineKeyboardMarkup {
     }))
 }
 
+/// Assemble exactly the view and keyboard that handlers send to Telegram.
+/// Tests exercise this path rather than an unused static response.
+fn render_panel(
+    panel: &Panel,
+    screen: Screen,
+    login_url: Option<&url::Url>,
+    revision: u64,
+) -> (View, InlineKeyboardMarkup) {
+    let view = panel.view_for(screen, login_url, revision);
+    let keyboard = markup(&view, revision);
+    (view, keyboard)
+}
+
 /// The only normal sendMessage is creation of the first unauthenticated panel.
 /// All subsequent commands and button navigation use editMessageText.
 async fn ensure_panel(
@@ -59,8 +72,7 @@ async fn ensure_panel(
         return Ok(());
     }
     let initial = Panel::new(actor_id, 0);
-    let view = initial.view_for(Screen::Home, None, 0);
-    let keyboard = markup(&view, 0);
+    let (view, keyboard) = render_panel(&initial, Screen::Home, None, 0);
     let sent = bot
         .send_message(chat_id, view.text)
         .reply_markup(keyboard)
@@ -91,8 +103,7 @@ async fn edit_panel(
         return Ok(());
     };
     let revision = panel.revision.saturating_add(1);
-    let view = panel.view_for(screen, login_url.as_ref(), revision);
-    let keyboard = markup(&view, revision);
+    let (view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
     bot.edit_message_text(chat_id, MessageId(panel.message_id), view.text)
         .reply_markup(keyboard)
         .await?;
@@ -108,11 +119,13 @@ async fn update_login(
     store: &mut UiStore,
     chat_id: ChatId,
     sender_id: u64,
+    update_message_id: i32,
     login: Option<&LoginGateway>,
 ) -> ResponseResult<()> {
-    let message_id = store.panels.get(&chat_id.0).map_or(0, |p| p.message_id);
+    // Bind the transaction to the actual verified incoming command / callback
+    // message, not a stored or zero-valued panel ID.
     let url = match login {
-        Some(gateway) => match gateway.start(sender_id, chat_id.0, message_id).await {
+        Some(gateway) => match gateway.start(sender_id, chat_id.0, update_message_id).await {
             Ok(url) => Some(url),
             Err(error) => {
                 tracing::warn!(?error, "AIS login-start unavailable");
@@ -124,23 +137,51 @@ async fn update_login(
     edit_panel(bot, store, chat_id, Screen::Login, url).await
 }
 
+/// Classify an actual private human Telegram input before the handler can
+/// make or edit a panel. Unverified sources have no effect.
+fn private_action(
+    private_chat: bool,
+    human_sender: bool,
+    forwarded: bool,
+    text: &str,
+) -> Option<PublicAction> {
+    permits_private_command(private_chat, human_sender, forwarded)
+        .then(|| classify_message(text))
+}
+
+/// Only the stored owner, originating panel message and current revision may
+/// navigate. Rendering this screen still grants no Core product authority.
+fn callback_screen(
+    panel: Option<&Panel>,
+    private_chat: bool,
+    human_sender: bool,
+    requester_id: u64,
+    message_id: i32,
+    data: Option<&str>,
+) -> Option<Screen> {
+    if !private_chat || !human_sender {
+        return None;
+    }
+    panel?.callback_target(requester_id, message_id, data.unwrap_or_default())
+}
+
 async fn handle_message(
     bot: Bot,
     message: Message,
     state: SharedUi,
     login: Option<LoginGateway>,
 ) -> ResponseResult<()> {
-    if !permits_private_command(
-        message.chat.is_private(),
-        message.from.as_ref().is_some_and(|sender| !sender.is_bot),
-        message.forward_origin().is_some(),
-    ) {
-        return Ok(());
-    }
     let Some(sender) = &message.from else {
         return Ok(());
     };
-    let action = classify_message(message.text().unwrap_or_default());
+    let Some(action) = private_action(
+        message.chat.is_private(),
+        !sender.is_bot,
+        message.forward_origin().is_some(),
+        message.text().unwrap_or_default(),
+    ) else {
+        return Ok(());
+    };
     let mut store = state.lock().await;
 
     // Track observed incoming messages for later *best-effort* post-auth
@@ -185,6 +226,7 @@ async fn handle_message(
                 &mut store,
                 message.chat.id,
                 sender.id.0,
+                message.id.0,
                 login.as_ref(),
             )
             .await?;
@@ -218,23 +260,28 @@ async fn handle_callback(
         bot.answer_callback_query(query.id).await?;
         return Ok(());
     };
-    if !message.chat.is_private() || query.from.is_bot {
-        bot.answer_callback_query(query.id).await?;
-        return Ok(());
-    }
     let chat = message.chat.id;
     let mut store = state.lock().await;
-    let screen = store.panels.get(&chat.0).and_then(|panel| {
-        panel.callback_target(
-            query.from.id.0,
-            message.id.0,
-            query.data.as_deref().unwrap_or_default(),
-        )
-    });
+    let screen = callback_screen(
+        store.panels.get(&chat.0),
+        message.chat.is_private(),
+        !query.from.is_bot,
+        query.from.id.0,
+        message.id.0,
+        query.data.as_deref(),
+    );
     bot.answer_callback_query(query.id).await?;
     match screen {
         Some(Screen::Login) => {
-            update_login(&bot, &mut store, chat, query.from.id.0, login.as_ref()).await?;
+            update_login(
+                &bot,
+                &mut store,
+                chat,
+                query.from.id.0,
+                message.id.0,
+                login.as_ref(),
+            )
+            .await?;
         }
         Some(next) => {
             edit_panel(&bot, &mut store, chat, next, None).await?;
@@ -268,21 +315,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_private_human_original_messages_may_execute_commands() {
-        assert!(permits_private_command(true, true, false));
-        assert!(!permits_private_command(false, true, false));
-        assert!(!permits_private_command(true, false, false));
-        assert!(!permits_private_command(true, true, true));
+    fn command_handlers_are_gated_by_actual_telegram_source() {
+        for command in ["/start", "/START", "/Open"] {
+            assert_eq!(
+                private_action(true, true, false, command),
+                Some(PublicAction::EnterTextClient)
+            );
+        }
+        assert_eq!(
+            private_action(true, true, false, "/SUBSCRIPTION"),
+            Some(PublicAction::Subscription)
+        );
+        assert_eq!(
+            private_action(true, true, false, "/inventory"),
+            Some(PublicAction::NeedsCore)
+        );
+        assert_eq!(
+            private_action(true, true, false, "лети на Майдан"),
+            Some(PublicAction::Ignore)
+        );
+        for (private_chat, human_sender, forwarded) in [
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                private_action(private_chat, human_sender, forwarded, "/start"),
+                None
+            );
+        }
     }
 
     #[test]
-    fn buttons_are_navigation_not_slash_commands() {
+    fn handler_rendered_panel_is_text_only_and_never_invents_core_state() {
         let panel = Panel::new(8, 10);
-        let view = panel.view_for(Screen::Home, None, 0);
-        let keyboard = markup(&view, 0);
-        let serialized = serde_json::to_string(&keyboard).unwrap();
-        assert!(serialized.contains("ui:0:subscription"));
-        assert!(serialized.contains("ui:0:inventory"));
-        assert!(!serialized.contains("/inventory"));
+        for (screen, expected) in [
+            (Screen::Home, "Сесія Bond не підтверджена Core"),
+            (Screen::Subscription, "Підписка недоступна"),
+            (Screen::Inventory, "Інвентар недоступний"),
+            (Screen::Travel, "Подорожі недоступні"),
+            (Screen::Unavailable, "Жодних даних не змінено"),
+        ] {
+            let (view, keyboard) = render_panel(&panel, screen, None, 0);
+            assert!(view.text.contains(expected), "{screen:?}: {}", view.text);
+            let json = serde_json::to_string(&keyboard).unwrap();
+            assert!(!json.contains("web_app"));
+            assert!(!json.contains("nilx.one/telegram"));
+        }
+        let (view, keyboard) = render_panel(&panel, Screen::Home, None, 0);
+        let json = serde_json::to_string(&keyboard).unwrap();
+        assert!(json.contains("ui:0:subscription"));
+        assert!(json.contains("ui:0:inventory"));
+        assert!(!view.text.contains("Special активна"));
+        assert!(!json.contains("/inventory"));
+    }
+
+    #[test]
+    fn callback_handler_checks_owner_message_revision_and_source() {
+        let mut panel = Panel::new(8, 10);
+        assert_eq!(
+            callback_screen(
+                Some(&panel), true, true, 8, 10, Some("ui:0:subscription")
+            ),
+            Some(Screen::Subscription)
+        );
+        assert_eq!(
+            callback_screen(Some(&panel), false, true, 8, 10, Some("ui:0:subscription")),
+            None
+        );
+        assert_eq!(
+            callback_screen(Some(&panel), true, false, 8, 10, Some("ui:0:subscription")),
+            None
+        );
+        assert_eq!(
+            callback_screen(Some(&panel), true, true, 9, 10, Some("ui:0:subscription")),
+            None
+        );
+        assert_eq!(
+            callback_screen(Some(&panel), true, true, 8, 11, Some("ui:0:subscription")),
+            None
+        );
+        assert_eq!(
+            callback_screen(None, true, true, 8, 10, Some("ui:0:subscription")),
+            None
+        );
+        panel.change_screen(Screen::Subscription, None);
+        assert_eq!(
+            callback_screen(Some(&panel), true, true, 8, 10, Some("ui:0:subscription")),
+            None
+        );
+        assert_eq!(
+            callback_screen(Some(&panel), true, true, 8, 10, Some("ui:1:inventory")),
+            Some(Screen::Inventory)
+        );
     }
 }
