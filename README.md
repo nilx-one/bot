@@ -31,8 +31,10 @@ verified Telegram-to-Market customer identity and looks up whether that Market
 customer's provider account is linked to an existing 0x1 Bond. It uses Market's
 documented `POST /v1/auth/external` and `GET /v1/issuer-accounts/0x1`
 contracts, with a short-lived signed `X-Market-Customer-Assertion` backed by
-HMAC-SHA256. The Market may create its own local customer account when that
-provider first authenticates. It does not create a Bond.
+HMAC-SHA256. **The POST is an identity write:** Market may create its own
+local customer account when that provider first authenticates. It does not
+create a Bond, debit seeds or issue a subscription. This staged adapter is
+currently unwired, so merely deploying PR #6 will not register users.
 
 All settings are optional **only together**, for a trusted staging adapter:
 
@@ -42,6 +44,11 @@ All settings are optional **only together**, for a trusted staging adapter:
 # MARKET_CHANNEL_PUBLIC_TOKEN=<market-channel-api-token>
 # MARKET_CHANNEL_ASSERTION_SECRET=<market-channel-signing-secret-at-least-32-bytes>
 ~~~
+
+Market's issuer directory owns its own public-handle grammar: an account may
+be linked as `zero` or `0x0sky`; the bot does not impose a `0x` prefix.
+A missing, invalid or unavailable directory response is not an absent
+subscription or permission to buy.
 
 The channel secret is shared **only** with the authenticated Market verifier.
 Do not use the issuer token or `NILX_BROWSER_HANDOFF_TOKEN` as the channel
