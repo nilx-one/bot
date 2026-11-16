@@ -449,7 +449,9 @@ mod transport_integration_tests {
                 let headers = std::str::from_utf8(&bytes[..headers_end]).unwrap();
                 let request_path = headers.split_whitespace().nth(1).unwrap().to_owned();
                 assert!(
-                    request_path.to_ascii_lowercase().ends_with(&method.to_ascii_lowercase()),
+                    request_path
+                        .to_ascii_lowercase()
+                        .ends_with(&method.to_ascii_lowercase()),
                     "unexpected method {request_path}"
                 );
                 let size: usize = headers
