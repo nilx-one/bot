@@ -407,3 +407,208 @@ mod tests {
         );
     }
 }
+
+
+#[cfg(test)]
+mod transport_integration_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    // A local Telegram Bot API is enough to test actual handlers. No live
+    // Telegram account, test token, or production endpoint is required.
+    fn telegram_api(
+        expected: Vec<&'static str>,
+    ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let bot = Bot::new("123:TEST").set_api_url(
+            url::Url::parse(&format!("http://{address}/")).unwrap(),
+        );
+
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for method in expected {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut bytes = Vec::new();
+                let headers_end = loop {
+                    let mut buffer = [0; 8192];
+                    let n = stream.read(&mut buffer).unwrap();
+                    assert!(n != 0, "unexpected EOF before request headers");
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let headers = std::str::from_utf8(&bytes[..headers_end]).unwrap();
+                let request_path = headers.split_whitespace().nth(1).unwrap().to_owned();
+                assert!(request_path.ends_with(method), "unexpected method {request_path}");
+                let size: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|s| s.trim().parse().ok())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() - headers_end < size {
+                    let mut buffer = [0; 8192];
+                    let n = stream.read(&mut buffer).unwrap();
+                    assert!(n != 0, "unexpected EOF before JSON body");
+                    bytes.extend_from_slice(&buffer[..n]);
+                }
+                let body: Value = serde_json::from_slice(
+                    &bytes[headers_end..headers_end + size],
+                )
+                .unwrap();
+                requests.push((method.to_owned(), body));
+
+                let result = if method == "sendMessage" {
+                    json!({
+                        "message_id": 100,
+                        "date": 1700000000,
+                        "chat": {"id": 42, "type": "private", "first_name": "Human"},
+                        "text": "0x1 · Text"
+                    })
+                } else {
+                    json!(true)
+                };
+                let response = json!({"ok": true, "result": result}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .unwrap();
+            }
+            requests
+        });
+        (bot, handle)
+    }
+
+    fn incoming(message_id: i32, text: &str) -> Message {
+        serde_json::from_value(json!({
+            "message_id": message_id,
+            "date": 1700000000,
+            "chat": {"id": 42, "type": "private", "first_name": "Human"},
+            "from": {"id": 42, "is_bot": false, "first_name": "Human"},
+            "text": text
+        }))
+        .unwrap()
+    }
+
+    fn callback(message_id: i32, data: &str) -> CallbackQuery {
+        serde_json::from_value(json!({
+            "id": "callback-test-id",
+            "from": {"id": 42, "is_bot": false, "first_name": "Human"},
+            "chat_instance": "private-instance",
+            "message": {
+                "message_id": message_id,
+                "date": 1700000000,
+                "chat": {"id": 42, "type": "private", "first_name": "Human"},
+                "text": "0x1 · Text"
+            },
+            "data": data
+        }))
+        .unwrap()
+    }
+
+    fn temp_ui() -> (SharedUi, PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nilx-bot-telegram-handler-{}-{nonce}.json",
+            std::process::id()
+        ));
+        (Arc::new(Mutex::new(UiStore::open(path.clone()).unwrap())), path)
+    }
+
+    #[tokio::test]
+    async fn real_message_handler_reuses_one_panel_and_never_fakes_core_data() {
+        let (bot, server) = telegram_api(vec![
+            "sendMessage",
+            "editMessageText",
+            "editMessageText",
+            "editMessageText",
+        ]);
+        let (state, path) = temp_ui();
+        for (message_id, text) in [
+            (10, "/start"),
+            (11, "/SUBSCRIPTION"),
+            (12, "/inventory"),
+        ] {
+            handle_message(bot.clone(), incoming(message_id, text), state.clone(), None)
+                .await
+                .unwrap();
+        }
+        // The fourth API call is an actual return to Home, not another send.
+        handle_message(bot, incoming(13, "/start"), state.clone(), None)
+            .await
+            .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].0, "sendMessage");
+        for (method, body) in requests.iter().skip(1) {
+            assert_eq!(method, "editMessageText");
+            assert_eq!(body["message_id"], 100);
+        }
+        assert!(requests[1].1["text"].as_str().unwrap().contains("Підписка недоступна"));
+        assert!(requests[2].1["text"].as_str().unwrap().contains("Інвентар недоступний"));
+        assert!(requests[3].1["text"].as_str().unwrap().contains("Сесія Bond не підтверджена"));
+        let store = state.lock().await;
+        assert_eq!(store.panels.get(&42).unwrap().message_id, 100);
+        assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Home);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn real_callback_handler_edits_only_a_fresh_authorized_panel() {
+        let (bot, server) = telegram_api(vec![
+            "answerCallbackQuery",
+            "editMessageText",
+            "answerCallbackQuery",
+        ]);
+        let (state, path) = temp_ui();
+        {
+            let mut store = state.lock().await;
+            store.panels.insert(42, Panel::new(42, 100));
+        }
+        handle_callback(
+            bot.clone(),
+            callback(100, "ui:0:inventory"),
+            state.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        handle_callback(
+            bot,
+            callback(100, "ui:0:subscription"),
+            state.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].0, "answerCallbackQuery");
+        assert_eq!(requests[1].0, "editMessageText");
+        assert_eq!(requests[2].0, "answerCallbackQuery");
+        assert!(requests[1].1["text"].as_str().unwrap().contains("Інвентар недоступний"));
+        let store = state.lock().await;
+        assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Inventory);
+        assert_eq!(store.panels.get(&42).unwrap().revision, 1);
+        drop(store);
+    }
+}
