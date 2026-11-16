@@ -625,5 +625,6 @@ mod transport_integration_tests {
         assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Inventory);
         assert_eq!(store.panels.get(&42).unwrap().revision, 1);
         drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 }
