@@ -49,13 +49,21 @@ mod tests {
         }
         assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
-        assert_eq!(classify_message("/SUBSCRIPTION"), PublicAction::Subscription);
+        assert_eq!(
+            classify_message("/SUBSCRIPTION"),
+            PublicAction::Subscription
+        );
     }
 
     #[test]
     fn unsupported_commands_need_authorized_core_and_text_is_not_a_command() {
         for command in [
-            "/unlink", "/travel", "/set_position", "/inventory", "/avaia", "/admin",
+            "/unlink",
+            "/travel",
+            "/set_position",
+            "/inventory",
+            "/avaia",
+            "/admin",
         ] {
             assert_eq!(classify_message(command), PublicAction::NeedsCore);
         }
