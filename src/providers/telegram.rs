@@ -145,8 +145,7 @@ fn private_action(
     forwarded: bool,
     text: &str,
 ) -> Option<PublicAction> {
-    permits_private_command(private_chat, human_sender, forwarded)
-        .then(|| classify_message(text))
+    permits_private_command(private_chat, human_sender, forwarded).then(|| classify_message(text))
 }
 
 /// Only the stored owner, originating panel message and current revision may
@@ -374,9 +373,7 @@ mod tests {
     fn callback_handler_checks_owner_message_revision_and_source() {
         let mut panel = Panel::new(8, 10);
         assert_eq!(
-            callback_screen(
-                Some(&panel), true, true, 8, 10, Some("ui:0:subscription")
-            ),
+            callback_screen(Some(&panel), true, true, 8, 10, Some("ui:0:subscription")),
             Some(Screen::Subscription)
         );
         assert_eq!(
