@@ -15,7 +15,7 @@ base64 = "0.22"
 # Gzip of the map archive's directories and tiles.
 flate2 = "1"
 # Core's vector tile roads, walking graph and Special pickup choices.
-nilxone-contracts = { git = "https://github.com/nilx-one/core", rev = "9d4bb2c22c2f27333a8fc16650a5e277a0fdaf6d" }
+nilxone-contracts = { git = "https://github.com/nilx-one/core", rev = "cff7a1e7c92351bd70106adb07a8ef4b8592b6ef" }
 ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
