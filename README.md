@@ -76,6 +76,40 @@ E2E evidence and explicit authorization. Read the
 [Market issuer-order contract](https://github.com/0xda-market/core/blob/master/docs/architecture/issuer-orders.md)
 and [Core's subscription contract](https://github.com/nilx-one/core/blob/master/docs/subscriptions.md).
 
+## Walking to a paid Special without a map (staged)
+
+A text client has no MapLibre, yet Core's [Special pickup](https://github.com/nilx-one/core/blob/master/docs/special-pickup.md)
+contract needs `walk_route_available`: whether the Avaia can walk to the
+pickup point. The bot answers it from the same self-hosted map archive the
+Web client draws, with Core doing every rule:
+
+~~~text
+BOT_MAP_ARCHIVE_URL ── HTTP Range ──▶ src/pmtiles.rs (header, directories, gzip off)
+  ──▶ z14 tiles around both ends ──▶ Core vector_tile::build_walk_graph_from_tiles
+  ──▶ Core snap + reach ──▶ walk_route_available ──▶ Core special_pickup_choices
+~~~
+
+- `src/pmtiles.rs` is a bounded PMTiles v3 reader: MVT only, gzip or no
+  compression, at most 4 MiB per range and 16 MiB inflated, redirects refused,
+  `https` only (plain `http` only for `localhost`). Tile ids match the
+  `pmtiles` npm reader.
+- `src/walk.rs` reads the archive only for a **paid** item whose Avaia stands
+  **inside** Core's 300 m radius, at most 16 tiles. A route counts when the
+  roads join any place within Core's 30 m snap distance of one end to any
+  within it of the other (up to 8 candidates each), so a disconnected stub
+  next to the Avaia does not hide the street behind it.
+- Any failure to read the archive **fails closed**: no walk suggestion; xPing
+  stays offered exactly as Core decides.
+- **Unwired.** `paid`, the Avaia's in-world position and the BusinessPoint
+  must come from a verified Core Gateway response, which does not exist yet.
+  Nothing here dispatches xPing, starts a walk, moves an Avaia or proves
+  payment or presence.
+
+~~~sh
+# Optional, staged: the public map archive the Web client draws.
+# BOT_MAP_ARCHIVE_URL=https://nilx.one/map/0.1.0/basemap.pmtiles
+~~~
+
 ## Text-client feature scope
 
 The finished text client must expose **all existing Core product capabilities**, including information about Bond/Avaia, inventory and items, subscriptions, organizations and eligible travel. It uses typed Core read/actions and parity tests, not a second set of rules or language-model inference. Work is tracked in [Core #123](https://github.com/nilx-one/core/issues/123) and [Core #124](https://github.com/nilx-one/core/issues/124).
