@@ -6,5 +6,7 @@
 pub mod application;
 pub mod login;
 pub mod market;
+pub mod pmtiles;
 pub mod providers;
 pub mod ui;
+pub mod walk;
