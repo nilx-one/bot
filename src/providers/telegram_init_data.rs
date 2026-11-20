@@ -125,7 +125,7 @@ fn decode_hash(hash: &str) -> Result<[u8; 32], InitDataRejection> {
         return Err(InitDataRejection::InvalidHash);
     }
     let mut result = [0_u8; 32];
-    for (index, pair) in hash.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in hash.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let nibble = |value| match value {
             b'0'..=b'9' => Some(value - b'0'),
             b'a'..=b'f' => Some(value - b'a' + 10),
