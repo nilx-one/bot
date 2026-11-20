@@ -68,10 +68,9 @@ pub fn verify_init_data(
         return Err(InitDataRejection::Expired);
     }
 
-    let user: TelegramUser = serde_json::from_str(
-        fields.get("user").ok_or(InitDataRejection::MissingUser)?,
-    )
-    .map_err(|_| InitDataRejection::InvalidUser)?;
+    let user: TelegramUser =
+        serde_json::from_str(fields.get("user").ok_or(InitDataRejection::MissingUser)?)
+            .map_err(|_| InitDataRejection::InvalidUser)?;
     if user.id <= 0 {
         return Err(InitDataRejection::InvalidUser);
     }
@@ -90,7 +89,10 @@ fn parse_fields(value: &str) -> Result<BTreeMap<String, String>, InitDataRejecti
     }
     let mut fields = BTreeMap::new();
     for (key, value) in form_urlencoded::parse(value.as_bytes()) {
-        if fields.insert(key.into_owned(), value.into_owned()).is_some() {
+        if fields
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
+        {
             return Err(InitDataRejection::DuplicateField);
         }
     }
@@ -101,9 +103,7 @@ fn verify_hash(
     fields: &BTreeMap<String, String>,
     bot_token: &str,
 ) -> Result<(), InitDataRejection> {
-    let hash = fields
-        .get("hash")
-        .ok_or(InitDataRejection::MissingHash)?;
+    let hash = fields.get("hash").ok_or(InitDataRejection::MissingHash)?;
     let hash = decode_hash(hash)?;
     let data_check_string = fields
         .iter()
