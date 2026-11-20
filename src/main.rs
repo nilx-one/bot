@@ -32,8 +32,7 @@ fn test_username(name: &str) -> Result<&str, &'static str> {
 
 fn matches_test_bot(expected: &str, actual: Option<&str>) -> bool {
     actual.is_some_and(|name| {
-        name.eq_ignore_ascii_case(expected)
-            && !name.eq_ignore_ascii_case(PRODUCTION_BOT_USERNAME)
+        name.eq_ignore_ascii_case(expected) && !name.eq_ignore_ascii_case(PRODUCTION_BOT_USERNAME)
     })
 }
 
@@ -50,10 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = std::env::var("BOT_TEST_TOKEN").unwrap_or_default();
     let token = test_token(&mode, &token).map_err(std::io::Error::other)?;
     if std::env::var_os("TELOXIDE_TOKEN").is_some() {
-        return Err(std::io::Error::other(
-            "TELOXIDE_TOKEN is forbidden in the isolated test bot",
-        )
-        .into());
+        return Err(
+            std::io::Error::other("TELOXIDE_TOKEN is forbidden in the isolated test bot").into(),
+        );
     }
     let username = std::env::var("BOT_TEST_USERNAME").unwrap_or_default();
     let username = test_username(&username).map_err(std::io::Error::other)?;
@@ -64,10 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|_| std::io::Error::other("Cannot verify Telegram test bot identity"))?;
     if !matches_test_bot(username, me.user.username.as_deref()) {
-        return Err(std::io::Error::other(
-            "Configured token does not belong to BOT_TEST_USERNAME",
-        )
-        .into());
+        return Err(
+            std::io::Error::other("Configured token does not belong to BOT_TEST_USERNAME").into(),
+        );
     }
     let login = LoginGateway::from_env().map_err(std::io::Error::other)?;
     run_test_bot(token.to_owned(), login).await?;
