@@ -188,6 +188,7 @@ mod tests {
     #[test]
     fn accepts_independently_signed_init_data_and_requires_exact_hash_encoding() {
         // HMAC generated independently using Python's standard library.
+        const VECTOR_TOKEN: &str = "123456:independent-vector-token";
         const BODY: &str = concat!(
             "auth_date=1800000000&query_id=query-independent&signature=fixture_signature&",
             "user=%7B%22id%22%3A42%2C%22first_name%22%3A%22Test+Name%22%7D",
@@ -195,12 +196,12 @@ mod tests {
         const HASH: &str = "9d2daf8e0b55892982fd16986ccedeafd5c89012bde7809628b9a2a1c08cb7f6";
         let wire = |hash: &str| format!("{BODY}&hash={hash}");
         assert_eq!(
-            verify_init_data("123456:independent-vector-token", &wire(HASH), NOW + 10, 300),
+            verify_init_data(VECTOR_TOKEN, &wire(HASH), NOW + 10, 300),
             Ok(VerifiedTelegramUser { id: 42 })
         );
         for invalid in [HASH.to_ascii_uppercase(), HASH[..62].to_owned()] {
             assert_eq!(
-                verify_init_data("123456:independent-vector-token", &wire(&invalid), NOW, 300),
+                verify_init_data(VECTOR_TOKEN, &wire(&invalid), NOW, 300),
                 Err(InitDataRejection::InvalidHash)
             );
         }
