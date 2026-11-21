@@ -11,6 +11,7 @@ use ring::hmac;
 use serde::Deserialize;
 use url::form_urlencoded;
 
+const MAX_AGE_SECONDS: u64 = 300;
 const FUTURE_SKEW_SECONDS: u64 = 30;
 const MAX_INIT_DATA_BYTES: usize = 16 * 1024;
 const LABEL: &[u8] = b"WebAppData";
@@ -47,6 +48,8 @@ struct TelegramUser {
 /// Verify signed Telegram initData without exposing the Bot API token.
 /// Successful verification proves a Telegram provider account, not AIS
 /// identity, Bond authorization, a device or an active product session.
+/// Telegram initData can be replayed within its validity window. The Core/AIS
+/// bridge must bind it to an audience and consume its own challenge once.
 pub fn verify_init_data(
     bot_token: &str,
     init_data: &str,
@@ -64,7 +67,7 @@ pub fn verify_init_data(
     if auth_date > now_unix_seconds.saturating_add(FUTURE_SKEW_SECONDS) {
         return Err(InitDataRejection::FutureAuthDate);
     }
-    if now_unix_seconds.saturating_sub(auth_date) > max_age_seconds {
+    if now_unix_seconds.saturating_sub(auth_date) > max_age_seconds.min(MAX_AGE_SECONDS) {
         return Err(InitDataRejection::Expired);
     }
 
@@ -183,6 +186,27 @@ mod tests {
     }
 
     #[test]
+    fn accepts_independently_signed_init_data_and_requires_exact_hash_encoding() {
+        // HMAC generated independently using Python's standard library.
+        const BODY: &str = concat!(
+            "auth_date=1800000000&query_id=query-independent&signature=fixture_signature&",
+            "user=%7B%22id%22%3A42%2C%22first_name%22%3A%22Test+Name%22%7D",
+        );
+        const HASH: &str = "9d2daf8e0b55892982fd16986ccedeafd5c89012bde7809628b9a2a1c08cb7f6";
+        let wire = |hash: &str| format!("{BODY}&hash={hash}");
+        assert_eq!(
+            verify_init_data("123456:independent-vector-token", &wire(HASH), NOW + 10, 300),
+            Ok(VerifiedTelegramUser { id: 42 })
+        );
+        for invalid in [HASH.to_ascii_uppercase(), HASH[..62].to_owned()] {
+            assert_eq!(
+                verify_init_data("123456:independent-vector-token", &wire(&invalid), NOW, 300),
+                Err(InitDataRejection::InvalidHash)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_tampering_and_cross_bot_token() {
         let data = signed(TOKEN, NOW, r#"{"id":42}"#);
         assert_eq!(
@@ -200,7 +224,7 @@ mod tests {
         let stale = signed(TOKEN, NOW - 301, r#"{"id":42}"#);
         let future = signed(TOKEN, NOW + 31, r#"{"id":42}"#);
         assert_eq!(
-            verify_init_data(TOKEN, &stale, NOW, 300),
+            verify_init_data(TOKEN, &stale, NOW, u64::MAX),
             Err(InitDataRejection::Expired)
         );
         assert_eq!(
