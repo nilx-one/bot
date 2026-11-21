@@ -223,6 +223,11 @@ async fn handle_message(
         PublicAction::EnterTextClient => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
         }
+        PublicAction::OpenMiniApp => {
+            // A Telegram sender and bare Mini App URL are not proof of
+            // Bond/device/session continuity. No WebView link until Core binds it.
+            edit_panel(&bot, &mut store, message.chat.id, Screen::MiniApp, None).await?;
+        }
         PublicAction::Help => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::Help, None).await?;
         }
@@ -322,12 +327,16 @@ mod tests {
 
     #[test]
     fn command_handlers_are_gated_by_actual_telegram_source() {
-        for command in ["/start", "/START", "/Open"] {
+        for command in ["/start", "/START"] {
             assert_eq!(
                 private_action(true, true, false, command),
                 Some(PublicAction::EnterTextClient)
             );
         }
+        assert_eq!(
+            private_action(true, true, false, "/OPEN"),
+            Some(PublicAction::OpenMiniApp)
+        );
         assert_eq!(
             private_action(true, true, false, "/SUBSCRIPTION"),
             Some(PublicAction::Subscription)
@@ -358,6 +367,7 @@ mod tests {
         for (screen, expected) in [
             (Screen::Home, "Сесія Bond не підтверджена Core"),
             (Screen::Subscription, "Підписка недоступна"),
+            (Screen::MiniApp, "Mini App недоступний"),
             (Screen::Inventory, "Інвентар недоступний"),
             (Screen::Travel, "Подорожі недоступні"),
             (Screen::Unavailable, "Жодних даних не змінено"),
@@ -372,6 +382,7 @@ mod tests {
         let json = serde_json::to_string(&keyboard).unwrap();
         assert!(json.contains("ui:0:subscription"));
         assert!(json.contains("ui:0:inventory"));
+        assert!(json.contains("ui:0:mini_app"));
         assert!(!view.text.contains("Special активна"));
         assert!(!json.contains("/inventory"));
     }
@@ -543,6 +554,34 @@ mod transport_integration_tests {
             Arc::new(Mutex::new(UiStore::open(path.clone()).unwrap())),
             path,
         )
+    }
+
+    #[tokio::test]
+    async fn open_requires_core_continuity_and_never_launches_webview() {
+        let (bot, server) = telegram_api(vec!["sendMessage", "editMessageText"]);
+        let (state, path) = temp_ui();
+        handle_message(bot, incoming(10, "/open"), state.clone(), None)
+            .await
+            .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "sendMessage");
+        assert_eq!(requests[1].0, "editMessageText");
+        assert_eq!(requests[1].1["message_id"], 100);
+        assert!(
+            requests[1].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Core не підтвердив спільну логічну Telegram-сесію")
+        );
+        let markup = requests[1].1["reply_markup"].to_string();
+        assert!(!markup.contains("web_app"));
+        assert!(!markup.contains("nilx.one/telegram"));
+        let store = state.lock().await;
+        assert_eq!(store.panels.get(&42).unwrap().screen, Screen::MiniApp);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

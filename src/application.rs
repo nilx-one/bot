@@ -8,6 +8,8 @@
 pub enum PublicAction {
     /// Enter the text experience, without opening the Web Mini App.
     EnterTextClient,
+    /// Explicit request to open Telegram Mini App; no Core continuity proof yet.
+    OpenMiniApp,
     Help,
     /// Requires a server-issued, single-use AIS browser transaction.
     StartLogin,
@@ -29,7 +31,8 @@ pub fn classify_message(text: &str) -> PublicAction {
     let name = raw_name.to_ascii_lowercase();
 
     match name.as_str() {
-        "/start" | "/open" => PublicAction::EnterTextClient,
+        "/start" => PublicAction::EnterTextClient,
+        "/open" => PublicAction::OpenMiniApp,
         "/help" => PublicAction::Help,
         "/login" => PublicAction::StartLogin,
         "/subscription" => PublicAction::Subscription,
@@ -44,8 +47,11 @@ mod tests {
 
     #[test]
     fn commands_are_case_insensitive_and_do_not_open_web() {
-        for command in ["/start", "/open", "/Open", "/START", "/open@nilxone_bot"] {
+        for command in ["/start", "/START", "/start@nilxone_bot"] {
             assert_eq!(classify_message(command), PublicAction::EnterTextClient);
+        }
+        for command in ["/open", "/Open", "/OPEN@nilxone_bot"] {
+            assert_eq!(classify_message(command), PublicAction::OpenMiniApp);
         }
         assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
