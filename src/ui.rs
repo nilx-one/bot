@@ -71,6 +71,7 @@ impl Screen {
 pub enum Button {
     Navigate(&'static str, Screen),
     OpenUrl(&'static str, Url),
+    OpenMiniApp,
 }
 
 #[derive(Debug, Clone)]
@@ -171,7 +172,7 @@ impl Panel {
             ),
             Screen::MiniApp => (
                 "0x1 · Telegram Mini App",
-                "Mini App недоступний: Core не підтвердив спільну логічну Telegram-сесію для цього Bond, host і пристрою. /open не змінює активний клієнт і не створює нової сесії. Дані 0x1 не змінено.",
+                "Відкрийте 0x1 у Telegram. За потреби увійдіть у Mini App. Перенесення активної гри потребує підтвердження.",
             ),
             Screen::Subscription => (
                 "0x1 · Підписка",
@@ -199,7 +200,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — головний екран\n/open — Mini App (потрібне підтвердження Core)\n/login — AIS\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — головний екран\n/open — відкрити Mini App\n/login — AIS\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",
@@ -213,6 +214,9 @@ impl Panel {
             } else {
                 rows.push(vec![Button::Navigate("Отримати посилання", Screen::Login)]);
             }
+        }
+        if screen == Screen::MiniApp {
+            rows.push(vec![Button::OpenMiniApp]);
         }
         if screen != Screen::Home {
             rows.push(vec![Button::Navigate("⌂ Головна", Screen::Home)]);
@@ -233,10 +237,9 @@ impl Panel {
             Button::Navigate("AIS", Screen::Login),
             Button::Navigate("Допомога", Screen::Help),
         ]);
-        rows.push(vec![Button::Navigate(
-            "Mini App (недоступно)",
-            Screen::MiniApp,
-        )]);
+        if screen != Screen::MiniApp {
+            rows.push(vec![Button::Navigate("Mini App", Screen::MiniApp)]);
+        }
         let _ = revision;
         View {
             text: format!("{title}\n\n{description}"),
