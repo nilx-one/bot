@@ -8,7 +8,7 @@
 pub enum PublicAction {
     /// Enter the text experience, without opening the Web Mini App.
     EnterTextClient,
-    /// Explicit request to open Telegram Mini App; no Core continuity proof yet.
+    /// Explicit request to show the Telegram Mini App launch button.
     OpenMiniApp,
     Help,
     /// Requires a server-issued, single-use AIS browser transaction.

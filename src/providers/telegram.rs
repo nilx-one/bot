@@ -11,7 +11,9 @@ use teloxide::{
     dispatching::UpdateFilterExt,
     dptree,
     prelude::*,
-    types::{CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageId},
+    types::{
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageId, WebAppInfo,
+    },
 };
 use tokio::sync::Mutex;
 
@@ -20,6 +22,8 @@ use crate::{
     login::LoginGateway,
     ui::{Button, Panel, Screen, UiStore, View},
 };
+
+const MINI_APP_URL: &str = "https://nilx.one/telegram/";
 
 type SharedUi = Arc<Mutex<UiStore>>;
 
@@ -42,6 +46,12 @@ fn markup(view: &View, revision: u64) -> InlineKeyboardMarkup {
                     format!("ui:{revision}:{}", target.key()),
                 ),
                 Button::OpenUrl(label, url) => InlineKeyboardButton::url(*label, url.clone()),
+                Button::OpenMiniApp => InlineKeyboardButton::web_app(
+                    "Відкрити Mini App",
+                    WebAppInfo {
+                        url: url::Url::parse(MINI_APP_URL).expect("valid Telegram Mini App URL"),
+                    },
+                ),
             })
             .collect::<Vec<_>>()
     }))
@@ -224,8 +234,6 @@ async fn handle_message(
             edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
         }
         PublicAction::OpenMiniApp => {
-            // A Telegram sender and bare Mini App URL are not proof of
-            // Bond/device/session continuity. No WebView link until Core binds it.
             edit_panel(&bot, &mut store, message.chat.id, Screen::MiniApp, None).await?;
         }
         PublicAction::Help => {
@@ -367,7 +375,6 @@ mod tests {
         for (screen, expected) in [
             (Screen::Home, "Сесія Bond не підтверджена Core"),
             (Screen::Subscription, "Підписка недоступна"),
-            (Screen::MiniApp, "Mini App недоступний"),
             (Screen::Inventory, "Інвентар недоступний"),
             (Screen::Travel, "Подорожі недоступні"),
             (Screen::Unavailable, "Жодних даних не змінено"),
@@ -557,7 +564,7 @@ mod transport_integration_tests {
     }
 
     #[tokio::test]
-    async fn open_requires_core_continuity_and_never_launches_webview() {
+    async fn open_renders_native_webview_button_without_session_data() {
         let (bot, server) = telegram_api(vec!["sendMessage", "editMessageText"]);
         let (state, path) = temp_ui();
         handle_message(bot, incoming(10, "/open"), state.clone(), None)
@@ -573,11 +580,15 @@ mod transport_integration_tests {
             requests[1].1["text"]
                 .as_str()
                 .unwrap()
-                .contains("Core не підтвердив спільну логічну Telegram-сесію")
+                .contains("Перенесення активної гри потребує підтвердження")
         );
-        let markup = requests[1].1["reply_markup"].to_string();
-        assert!(!markup.contains("web_app"));
-        assert!(!markup.contains("nilx.one/telegram"));
+        assert_eq!(
+            requests[1].1["reply_markup"]["inline_keyboard"][0][0],
+            json!({
+                "text": "Відкрити Mini App",
+                "web_app": {"url": "https://nilx.one/telegram/"}
+            })
+        );
         let store = state.lock().await;
         assert_eq!(store.panels.get(&42).unwrap().screen, Screen::MiniApp);
         drop(store);

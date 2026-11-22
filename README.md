@@ -18,16 +18,16 @@ The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-o
 Only a separate **test bot**, using Rust and Teloxide. Private, original human commands:
 
 - /start: open the text client's main panel.
-- /open: request the embedded Mini App. Until Core supports the verified shared-session transition, show an explicit unavailable screen; never issue a bare Web App launch or silently activate a new session.
+- /open: show the button that opens the embedded Mini App. The WebView uses its own sign-in, and Core handles any transfer of the active game.
 - /help: explain basic commands and honest availability.
 - /login: optionally request an AIS authorization link from the trusted product Gateway; fail closed when unavailable.
 - Other slash commands: reply in text that a verified AIS identity and Core Gateway are required. No gameplay mutation.
 
-Forwarded messages, bot senders and groups are not eligible command sources. No command is automatically handed to the production Web Mini App. A command cannot create location truth or a BondChain.
+Forwarded messages, bot senders and groups are not eligible command sources. The Mini App opens only when the user taps its launch button. A command cannot create location truth or a BondChain.
 
 ## Single-message Telegram UI
 
-- `/start`, `/login`, `/subscription`, `/help` and `/open` are top-level commands. `/open` is **not** a synonym for `/start`: it is the explicit (currently gated) Mini App transition. Features such as Bond, Avaia, inventory, subscriptions, organizations and eligible travel are navigated via Inline Keyboard, **not** additional slash commands.
+- `/start`, `/login`, `/subscription`, `/help` and `/open` are top-level commands. `/open` is **not** a synonym for `/start`: it is the explicit entry to the Mini App launch panel. Features such as Bond, Avaia, inventory, subscriptions, organizations and eligible travel are navigated via Inline Keyboard, **not** additional slash commands.
 - The first private interaction sends one unpinned login panel. Subsequent commands and button presses call `editMessageText` for that same `message_id`; callbacks check sender, originating message and revision to reject stale presses.
 - The test adapter persists **presentation metadata only** in `BOT_UI_STATE_PATH` (default `bot-ui-state.json`): chat, owner, panel message ID, current screen and recently observed message IDs. It never persists an AIS authorization URL, password, token, game state, Core session or Bond identity.
 - `/subscription` is a navigation shortcut. Without a real verified Core session, its screen reports unavailability; it does not fabricate Special/Exclusive status. No arbitrary text prompts navigate the world.
