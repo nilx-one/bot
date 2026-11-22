@@ -48,10 +48,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::var("BOT_RUN_MODE").unwrap_or_default();
     let token = std::env::var("BOT_TEST_TOKEN").unwrap_or_default();
     let token = test_token(&mode, &token).map_err(std::io::Error::other)?;
-    if std::env::var_os("TELOXIDE_TOKEN").is_some() {
-        return Err(
-            std::io::Error::other("TELOXIDE_TOKEN is forbidden in the isolated test bot").into(),
-        );
+    if std::env::var_os("TELEGRAM_BOT_TOKEN").is_some() {
+        return Err(std::io::Error::other(
+            "TELEGRAM_BOT_TOKEN is forbidden in the isolated test bot",
+        )
+        .into());
     }
     let username = std::env::var("BOT_TEST_USERNAME").unwrap_or_default();
     let username = test_username(&username).map_err(std::io::Error::other)?;
