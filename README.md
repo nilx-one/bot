@@ -151,7 +151,7 @@ Use a **separate Telegram test bot token**, never the running production bot's t
 
 ~~~sh
 export BOT_RUN_MODE=test
-export BOT_TEST_TOKEN='<separate-test-bot-token>'
+export TELEGRAM_BOT_TOKEN='<separate-test-bot-token>'
 cargo test --all-targets
 cargo run
 ~~~
