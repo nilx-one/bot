@@ -89,6 +89,7 @@ impl LoginGateway {
             || start_url.path() != "/api/v1/telegram/login/start"
             || callback.scheme() != "https"
             || callback.host_str().is_none()
+            || callback.path() != "/api/v1/telegram/login/callback"
             || !callback.username().is_empty()
             || callback.password().is_some()
             || callback.fragment().is_some()
@@ -271,6 +272,18 @@ mod tests {
         assert_eq!(
             gateway.start(42, 100, -1).await,
             Err(LoginError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn rejects_browser_callback_for_telegram_login() {
+        assert!(
+            LoginGateway::new(
+                "https://example.com/api/v1/telegram/login/start",
+                "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+                "https://nilx.one/auth/callback".into()
+            )
+            .is_err()
         );
     }
 
