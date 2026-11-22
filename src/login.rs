@@ -5,7 +5,19 @@
 //! authorization transaction. It does not construct its own state/nonce,
 //! verify identity, exchange codes, hold Bond sessions, or link accounts.
 
-use std::time::Duration;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ring::{
+    rand::{SecureRandom as _, SystemRandom},
+    signature::Ed25519KeyPair,
+};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+const TOKEN_ENDPOINT: &str = "https://auth.aiaiaiai.org/token";
+const CLIENT_ID: &str = "0x1-telegram-test-bot";
+const LOGIN_SCOPE: &str = "telegram.login.start";
 
 use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
@@ -18,7 +30,8 @@ use url::Url;
 pub struct LoginGateway {
     http: Client,
     start_url: Url,
-    service_token: String,
+    key: Arc<Ed25519KeyPair>,
+    kid: String,
     registered_callback: String,
 }
 
@@ -60,24 +73,34 @@ impl LoginGateway {
     /// fail at startup, rather than running with a weaker login flow.
     pub fn from_env() -> Result<Option<Self>, &'static str> {
         let start = std::env::var("BOT_LOGIN_START_URL").ok();
-        let token = std::env::var("BOT_GATEWAY_SERVICE_TOKEN").ok();
+        if std::env::var_os("BOT_GATEWAY_SERVICE_TOKEN").is_some() {
+            return Err("replace BOT_GATEWAY_SERVICE_TOKEN with the AIS bot signing key");
+        }
+        let seed = std::env::var("BOT_AIS_SIGNING_SEED").ok();
+        let kid = std::env::var("BOT_AIS_KEY_ID").ok();
         let callback = std::env::var("BOT_OIDC_CALLBACK_URL").ok();
-        match (start, token, callback) {
-            (None, None, None) => Ok(None),
-            (Some(start), Some(token), Some(callback)) => {
-                Self::new(&start, token, callback).map(Some)
+        match (start, seed, kid, callback) {
+            (None, None, None, None) => Ok(None),
+            (Some(start), Some(seed), Some(kid), Some(callback)) => {
+                Self::new(&start, &seed, kid, callback).map(Some)
             }
-            _ => Err(
-                "AIS login requires all BOT_LOGIN_START_URL, BOT_GATEWAY_SERVICE_TOKEN, BOT_OIDC_CALLBACK_URL settings",
-            ),
+            _ => {
+                Err("configure the login start URL, AIS signing seed, key ID and callback together")
+            }
         }
     }
 
     fn new(
         start_url: &str,
-        service_token: String,
+        seed: &str,
+        kid: String,
         registered_callback: String,
     ) -> Result<Self, &'static str> {
+        let seed = URL_SAFE_NO_PAD
+            .decode(seed)
+            .map_err(|_| "invalid AIS bot signing seed")?;
+        let key = Ed25519KeyPair::from_seed_unchecked(&seed)
+            .map_err(|_| "invalid AIS bot signing seed")?;
         let start_url = Url::parse(start_url).map_err(|_| "invalid gateway URL")?;
         let callback = Url::parse(&registered_callback).map_err(|_| "invalid callback URL")?;
         if start_url.scheme() != "https"
@@ -94,7 +117,11 @@ impl LoginGateway {
             || callback.password().is_some()
             || callback.fragment().is_some()
             || callback.query().is_some()
-            || service_token.trim().len() < 32
+            || kid.is_empty()
+            || kid.len() > 64
+            || !kid
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
         {
             return Err("invalid secure AIS gateway configuration");
         }
@@ -106,9 +133,76 @@ impl LoginGateway {
         Ok(Self {
             http,
             start_url,
-            service_token,
+            key: Arc::new(key),
+            kid,
             registered_callback,
         })
+    }
+
+    fn assertion(&self) -> Result<String, LoginError> {
+        let mut id = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut id)
+            .map_err(|_| LoginError::Unavailable)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| LoginError::Unavailable)?
+            .as_secs();
+        let header = serde_json::json!({"alg":"EdDSA", "kid": self.kid});
+        let claims = serde_json::json!({"iss":CLIENT_ID, "sub":CLIENT_ID, "aud":TOKEN_ENDPOINT,
+            "iat":now, "exp":now+60, "jti":URL_SAFE_NO_PAD.encode(id)});
+        let signed = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(header.to_string()),
+            URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        let signature = self.key.sign(signed.as_bytes());
+        Ok(format!(
+            "{signed}.{}",
+            URL_SAFE_NO_PAD.encode(signature.as_ref())
+        ))
+    }
+
+    async fn access_token(&self) -> Result<String, LoginError> {
+        #[derive(Deserialize)]
+        struct Grant {
+            access_token: String,
+            token_type: String,
+            scope: String,
+            expires_in: u64,
+        }
+        let assertion = self.assertion()?;
+        let response = self
+            .http
+            .post(TOKEN_ENDPOINT)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("audience", "0x1"),
+                ("scope", LOGIN_SCOPE),
+                (
+                    "client_assertion_type",
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                ),
+                ("client_assertion", assertion.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(LoginError::Unavailable);
+        }
+        let grant: Grant = response
+            .json()
+            .await
+            .map_err(|_| LoginError::InvalidResponse)?;
+        if grant.scope != LOGIN_SCOPE
+            || !grant.token_type.eq_ignore_ascii_case("Bearer")
+            || !(1..=300).contains(&grant.expires_in)
+            || !(1..=4096).contains(&grant.access_token.len())
+        {
+            return Err(LoginError::InvalidResponse);
+        }
+        Ok(grant.access_token)
     }
 
     /// A verified Telegram update supplies these actor/message IDs. The
@@ -121,14 +215,15 @@ impl LoginGateway {
         message_id: i32,
     ) -> Result<Url, LoginError> {
         // Never issue a login transaction without a real Telegram message.
-        if message_id <= 0 {
+        if message_id <= 0 || chat_id <= 0 || i64::try_from(provider_actor_id).ok() != Some(chat_id)
+        {
             return Err(LoginError::InvalidResponse);
         }
         let request = StartRequest::from_verified_update(provider_actor_id, chat_id, message_id);
         let result = self
             .http
             .post(self.start_url.clone())
-            .bearer_auth(&self.service_token)
+            .bearer_auth(self.access_token().await?)
             .json(&request)
             .send()
             .await
@@ -261,7 +356,8 @@ mod tests {
     async fn login_start_rejects_invalid_message_id_before_network() {
         let gateway = LoginGateway::new(
             "https://example.com/api/v1/telegram/login/start",
-            "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "test-key".into(),
             CALLBACK.into(),
         )
         .unwrap();
@@ -276,11 +372,50 @@ mod tests {
     }
 
     #[test]
+    fn signed_workload_assertions_are_fresh_and_target_only_ais() {
+        use ring::signature::{ED25519, KeyPair, UnparsedPublicKey};
+        let gateway = LoginGateway::new(
+            "https://nilx.one/api/v1/telegram/login/start",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "test-key".into(),
+            CALLBACK.into(),
+        )
+        .unwrap();
+        let assertion = gateway.assertion().unwrap();
+        let (signed, signature) = assertion.rsplit_once('.').unwrap();
+        UnparsedPublicKey::new(&ED25519, gateway.key.public_key().as_ref())
+            .verify(
+                signed.as_bytes(),
+                &URL_SAFE_NO_PAD.decode(signature).unwrap(),
+            )
+            .unwrap();
+        let decode = |s: &str| -> serde_json::Value {
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(s).unwrap()).unwrap()
+        };
+        let (header, claims) = signed.split_once('.').unwrap();
+        assert_eq!(decode(header)["kid"], "test-key");
+        let claims = decode(claims);
+        assert_eq!(claims["iss"], CLIENT_ID);
+        assert_eq!(claims["sub"], CLIENT_ID);
+        assert_eq!(claims["aud"], TOKEN_ENDPOINT);
+        assert_eq!(
+            claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
+            60
+        );
+        let next = gateway.assertion().unwrap();
+        assert_ne!(
+            claims["jti"],
+            decode(next.split('.').nth(1).unwrap())["jti"]
+        );
+    }
+
+    #[test]
     fn rejects_browser_callback_for_telegram_login() {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "test-key".into(),
                 "https://nilx.one/auth/callback".into()
             )
             .is_err()
@@ -292,7 +427,8 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "http://example.com/api/v1/telegram/login/start",
-                "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "test-key".into(),
                 CALLBACK.into()
             )
             .is_err()
@@ -300,7 +436,8 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "short".into(),
+                "short",
+                "test-key".into(),
                 CALLBACK.into()
             )
             .is_err()
@@ -308,7 +445,8 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "test-service-secret-abcdefghijklmnopqrstuvwxyz".into(),
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "test-key".into(),
                 CALLBACK.into()
             )
             .is_ok()
