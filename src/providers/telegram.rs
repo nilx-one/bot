@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     application::{PublicAction, classify_message},
-    login::LoginGateway,
+    login::{LoginError, LoginGateway},
     ui::{Button, Panel, Screen, UiStore, View},
 };
 
@@ -144,7 +144,57 @@ async fn update_login(
         },
         None => None,
     };
-    edit_panel(bot, store, chat_id, Screen::Login, url).await
+    let started = url.is_some();
+    edit_panel(bot, store, chat_id, Screen::Login, url).await?;
+    if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+        panel.login_message_id = started.then_some(update_message_id);
+    }
+    Ok(())
+}
+
+/// The owner pressed confirm on the current panel. Core decides whether the
+/// browser step belongs to this sender, chat and login message; the bot only
+/// shows the answer.
+async fn confirm_login(
+    bot: &Bot,
+    store: &mut UiStore,
+    chat_id: ChatId,
+    sender_id: u64,
+    login: Option<&LoginGateway>,
+) -> ResponseResult<()> {
+    let panel = store.panels.get(&chat_id.0);
+    if panel.is_some_and(|panel| {
+        panel.chat_session.is_some()
+            && panel.login_url.is_some()
+            && panel.login_message_id.is_none()
+    }) {
+        // Core already confirmed this press. Retry the UI edit without consuming it again.
+        return edit_panel(bot, store, chat_id, Screen::SignedIn, None).await;
+    }
+    let pending = panel.and_then(|panel| panel.login_message_id.zip(panel.login_url.clone()));
+    let (Some(gateway), Some((login_message_id, url))) = (login, pending) else {
+        return edit_panel(bot, store, chat_id, Screen::Login, None).await;
+    };
+    match gateway
+        .confirm(sender_id, chat_id.0, login_message_id)
+        .await
+    {
+        Ok(session) => {
+            if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+                panel.chat_session = Some(session);
+                panel.login_message_id = None;
+            }
+            edit_panel(bot, store, chat_id, Screen::SignedIn, None).await
+        }
+        Err(LoginError::NotConfirmable) => {
+            // Keep the same link: the browser step may still be unfinished.
+            edit_panel(bot, store, chat_id, Screen::ConfirmLogin, Some(url)).await
+        }
+        Err(error) => {
+            tracing::warn!(?error, "Telegram login confirmation unavailable");
+            edit_panel(bot, store, chat_id, Screen::Login, None).await
+        }
+    }
 }
 
 /// Classify an actual private human Telegram input before the handler can
@@ -302,6 +352,9 @@ async fn handle_callback(
             )
             .await?;
         }
+        Some(Screen::ConfirmLogin) => {
+            confirm_login(&bot, &mut store, chat, query.from.id.0, login.as_ref()).await?;
+        }
         Some(next) => {
             edit_panel(&bot, &mut store, chat, next, None).await?;
         }
@@ -429,6 +482,37 @@ mod tests {
             callback_screen(Some(&panel), true, true, 8, 10, Some("ui:1:inventory")),
             Some(Screen::Inventory)
         );
+    }
+
+    #[test]
+    fn login_link_comes_with_a_confirm_button_and_the_session_is_core_projection() {
+        let mut panel = Panel::new(8, 10);
+        let url = url::Url::parse("https://auth.aiaiaiai.org/0x1?state=s").unwrap();
+        for screen in [Screen::Login, Screen::ConfirmLogin] {
+            let (_, keyboard) = render_panel(&panel, screen, Some(&url), 3);
+            let json = serde_json::to_string(&keyboard).unwrap();
+            assert!(json.contains("auth.aiaiaiai.org"), "{screen:?}");
+            assert!(json.contains("ui:3:confirm_login"), "{screen:?}");
+        }
+        let (_, keyboard) = render_panel(&panel, Screen::Login, None, 3);
+        assert!(
+            !serde_json::to_string(&keyboard)
+                .unwrap()
+                .contains("confirm_login")
+        );
+        let (view, _) = render_panel(&panel, Screen::SignedIn, None, 4);
+        assert!(view.text.contains("Надішли /login"), "{}", view.text);
+        panel.chat_session = Some(crate::login::ChatSession {
+            profile_id: "p".into(),
+            pub_dress: Some("0x0sky".into()),
+            active: false,
+        });
+        let (view, _) = render_panel(&panel, Screen::SignedIn, None, 4);
+        assert!(view.text.contains("0x0sky"));
+        assert!(view.text.contains("Активний інший твій клієнт"));
+        panel.chat_session.as_mut().unwrap().active = true;
+        let (view, _) = render_panel(&panel, Screen::SignedIn, None, 4);
+        assert!(view.text.contains("Цей чат — активний клієнт 0x1."));
     }
 }
 
@@ -713,6 +797,34 @@ mod transport_integration_tests {
         let store = state.lock().await;
         assert_eq!(store.panels.get(&42).unwrap().screen, Screen::Inventory);
         assert_eq!(store.panels.get(&42).unwrap().revision, 1);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirm_without_a_started_login_never_claims_a_session() {
+        let (bot, server) = telegram_api(vec!["answerCallbackQuery", "editMessageText"]);
+        let (state, path) = temp_ui();
+        {
+            let mut store = state.lock().await;
+            store.panels.insert(42, Panel::new(42, 100));
+        }
+        handle_callback(
+            bot,
+            callback(100, "ui:0:confirm_login"),
+            state.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].0, "editMessageText");
+        let text = requests[1].1["text"].as_str().unwrap();
+        assert!(text.contains("AIS-авторизація недоступна"), "{text}");
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.screen, Screen::Login);
+        assert!(panel.chat_session.is_none());
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
