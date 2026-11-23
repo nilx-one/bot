@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if token.trim().is_empty() {
         return Err(std::io::Error::other("TELEGRAM_BOT_TOKEN is required").into());
     }
-    let login = LoginGateway::from_env().map_err(std::io::Error::other)?;
+    let login = LoginGateway::from_env(&token).map_err(std::io::Error::other)?;
     let bot = Bot::new(token);
     let me = bot
         .get_me()

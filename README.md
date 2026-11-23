@@ -148,22 +148,26 @@ dedicated registered Telegram callback. It must bind the real Telegram sender,
 persist/consume the transaction, check signed AIS subject continuity and require
 explicit account-link confirmation before any Bond binding.
 
-AIS must register the test workload `0x1-telegram-test-bot` with its Ed25519 public key and the single `telegram.login.start` scope for audience `0x1`. The bot exchanges a fresh signed assertion for each login start. This credential authorizes only the workload.
+The bot needs no credential of its own. It signs each request to the login
+host with HMAC-SHA256 under a key derived from `TELEGRAM_BOT_TOKEN`, the token
+it already runs with (`nilxone_api::bot_login::sign_request`, header
+`x-0x1-telegram-bot-signature`). The host holds the same token and accepts a
+signature for 60 seconds. Whoever holds the token already controls the chat,
+so the signature grants no new authority. AIS proves the Telegram link inside
+the ID token (`telegram_binding`), so the host holds no AIS key either.
 
-Optional staged login settings (all required together):
+Optional login settings (both or neither):
 
 ~~~sh
 export BOT_LOGIN_START_URL=https://nilx.one/api/v1/telegram/login/start
-export BOT_AIS_KEY_ID='<registered key id>'
-export BOT_AIS_SIGNING_SEED='<private Ed25519 seed, unpadded base64url>'
 export BOT_OIDC_CALLBACK_URL=https://nilx.one/api/v1/telegram/login/callback
 ~~~
 
-The dedicated Telegram callback does not exist yet. Do not substitute the
-regular browser product-session callback: that would create a browser session
-rather than confirm the correct Telegram client. Without a working Gateway,
-the command answers that login is unavailable. This is not an end-to-end
-account-link or a production feature.
+`BOT_LOGIN_START_URL` may name the login host's internal alias over plain
+HTTP, such as `http://nilxone-login-host:8080/api/v1/telegram/login/start`;
+any public name must use HTTPS. The callback stays the AIS-registered public
+URL. The retired `BOT_AIS_SIGNING_SEED`, `BOT_AIS_KEY_ID` and
+`BOT_GATEWAY_SERVICE_TOKEN` stop the bot at startup if they are still set.
 
 ## Production runtime
 
