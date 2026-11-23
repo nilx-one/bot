@@ -119,23 +119,20 @@ AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/i
 
 ## Telegram login and Mini App boundary
 
-The production target is one `@nilxone_bot` on `edge-dev-1`. Chat and
-`/login` run in the Bot runtime with embedded Core. When a player requests
-`/login`, Bot opens the 4x-ais sign-in page. After identity verification, AIS
-redirects to the Bot-owned HTTPS callback at
-`https://nilx.one/api/v1/telegram/login/callback`. Core verifies the AIS
-Telegram binding against the initiating sender, then waits for that sender's
-one-time confirmation in the original chat before issuing a product session.
-Core owns the durable login state and product session data.
+The planned production target is one `@nilxone_bot` on `edge-dev-1`. Bot
+handles the `/login` command and the original-chat confirmation. The
+dedicated Core login host creates the login transaction, receives the AIS
+callback at `https://nilx.one/api/v1/telegram/login/callback`, and verifies
+the AIS Telegram binding against the initiating sender. Core uses the shared
+0x1 product database and creates the product session after that sender
+confirms in the original chat.
 
-`nilx-one/web@telegram` is loaded when Telegram opens the optional Mini App
-in its WebView. Showing the launch button, starting AIS sign-in, receiving the
-AIS callback, and confirming the chat session are Bot runtime responsibilities.
+Telegram loads `nilx-one/web@telegram` when the user opens the optional Mini
+App. The chat login uses Bot, Core and AIS.
 
-The staged implementation below uses a login-start adapter in
-`web/services/identity`. Retire that adapter after Bot hosts the complete
-flow and ingress routes the registered callback to Bot. Core provider
-verification and sender confirmation are tracked in [Core #122](https://github.com/nilx-one/core/issues/122).
+The existing Web Identity adapter is transitional. Route the Telegram login
+paths to the Core host and give Telegram updates to a single consumer at
+cutover. The host work is tracked in [Core #164](https://github.com/nilx-one/core/pull/164).
 
 ### Staged AIS login-start adapter
 
