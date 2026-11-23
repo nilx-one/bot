@@ -164,7 +164,9 @@ async fn confirm_login(
 ) -> ResponseResult<()> {
     let panel = store.panels.get(&chat_id.0);
     if panel.is_some_and(|panel| {
-        panel.chat_session.is_some() && panel.login_url.is_some() && panel.login_message_id.is_none()
+        panel.chat_session.is_some()
+            && panel.login_url.is_some()
+            && panel.login_message_id.is_none()
     }) {
         // Core already confirmed this press. Retry the UI edit without consuming it again.
         return edit_panel(bot, store, chat_id, Screen::SignedIn, None).await;

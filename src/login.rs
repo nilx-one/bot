@@ -551,7 +551,10 @@ mod tests {
     fn confirmation_distinguishes_a_missing_attempt_from_a_missing_route() {
         let status = reqwest::StatusCode::NOT_FOUND;
         assert_eq!(
-            parse_confirmation(status, br#"{"error":{"code":"login_confirmation_not_found"}}"#),
+            parse_confirmation(
+                status,
+                br#"{"error":{"code":"login_confirmation_not_found"}}"#
+            ),
             Err(LoginError::NotConfirmable)
         );
         assert_eq!(
