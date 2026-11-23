@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! AIS login transport: the bot requests a Core-hosted, one-use OIDC
-//! authorization transaction. It does not construct its own state/nonce,
-//! verify identity, exchange codes, hold Bond sessions, or link accounts.
+//! authorization transaction, then forwards the original sender's confirm
+//! press. It does not construct its own state/nonce, verify identity,
+//! exchange codes, hold Bond sessions or tokens, or link accounts.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::{
@@ -18,6 +19,9 @@ use std::{
 const TOKEN_ENDPOINT: &str = "https://auth.aiaiaiai.org/token";
 const CLIENT_ID: &str = "0x1-telegram-test-bot";
 const LOGIN_SCOPE: &str = "telegram.login.start";
+const START_PATH: &str = "/api/v1/telegram/login/start";
+/// `nilxone_api::bot_login::CONFIRM_PATH`, on the same product host.
+const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
 
 use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
@@ -39,6 +43,20 @@ pub struct LoginGateway {
 pub enum LoginError {
     Unavailable,
     InvalidResponse,
+    /// Core has no verified browser step for this sender, chat and `/login`
+    /// message: unfinished, expired or already used.
+    NotConfirmable,
+}
+
+/// Core's answer to a confirmation: the chat has its own product session.
+/// A projection for display only; it authorizes nothing in the bot.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatSession {
+    pub profile_id: String,
+    pub pub_dress: Option<String>,
+    /// Single Active Client: false while the Mini App or a browser is active.
+    pub active: bool,
 }
 
 #[derive(Serialize)]
@@ -109,7 +127,7 @@ impl LoginGateway {
             || start_url.password().is_some()
             || start_url.fragment().is_some()
             || start_url.query().is_some()
-            || start_url.path() != "/api/v1/telegram/login/start"
+            || start_url.path() != START_PATH
             || callback.scheme() != "https"
             || callback.host_str().is_none()
             || callback.path() != "/api/v1/telegram/login/callback"
@@ -248,6 +266,48 @@ impl LoginGateway {
             return Err(LoginError::InvalidResponse);
         }
         Ok(url)
+    }
+
+    /// Forward a confirm press from the verified original sender. The
+    /// `login_message_id` is the message login start was bound to; Core
+    /// accepts it only for the same sender and private chat, once.
+    pub async fn confirm(
+        &self,
+        sender_id: u64,
+        chat_id: i64,
+        login_message_id: i32,
+    ) -> Result<ChatSession, LoginError> {
+        if login_message_id <= 0 || chat_id <= 0 || i64::try_from(sender_id).ok() != Some(chat_id) {
+            return Err(LoginError::InvalidResponse);
+        }
+        let request = StartRequest::from_verified_update(sender_id, chat_id, login_message_id);
+        let mut url = self.start_url.clone();
+        url.set_path(CONFIRM_PATH);
+        let result = self
+            .http
+            .post(url)
+            .bearer_auth(self.access_token().await?)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        let status = result.status();
+        let body = result.bytes().await.map_err(|_| LoginError::Unavailable)?;
+        if body.len() > 4_096 {
+            return Err(LoginError::InvalidResponse);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(LoginError::NotConfirmable);
+        }
+        if !status.is_success() {
+            return Err(LoginError::Unavailable);
+        }
+        let session: ChatSession =
+            serde_json::from_slice(&body).map_err(|_| LoginError::InvalidResponse)?;
+        if session.profile_id.is_empty() || session.profile_id.len() > 128 {
+            return Err(LoginError::InvalidResponse);
+        }
+        Ok(session)
     }
 }
 
@@ -450,6 +510,37 @@ mod tests {
                 CALLBACK.into()
             )
             .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn confirm_rejects_another_chat_before_network() {
+        let gateway = LoginGateway::new(
+            "https://example.com/api/v1/telegram/login/start",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "test-key".into(),
+            CALLBACK.into(),
+        )
+        .unwrap();
+        for (sender, chat, message) in [(42, 43, 7), (42, 42, 0), (0, 0, 7)] {
+            assert_eq!(
+                gateway.confirm(sender, chat, message).await,
+                Err(LoginError::InvalidResponse)
+            );
+        }
+    }
+
+    #[test]
+    fn chat_session_projection_never_accepts_a_token() {
+        let session: ChatSession =
+            serde_json::from_str(r#"{"profile_id":"p","pub_dress":"0x0sky","active":false}"#)
+                .unwrap();
+        assert!(!session.active);
+        assert!(
+            serde_json::from_str::<ChatSession>(
+                r#"{"profile_id":"p","pub_dress":null,"active":true,"token":"t"}"#
+            )
+            .is_err()
         );
     }
 }

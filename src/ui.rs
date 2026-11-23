@@ -13,6 +13,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::login::ChatSession;
+
 const MAX_TRACKED_MESSAGES: usize = 96;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -29,6 +31,10 @@ pub enum Screen {
     Organizations,
     Help,
     Unavailable,
+    /// The sender pressed confirm after the browser step.
+    ConfirmLogin,
+    /// Core opened this chat's own product session.
+    SignedIn,
 }
 
 impl Screen {
@@ -46,6 +52,8 @@ impl Screen {
             Self::Organizations => "organizations",
             Self::Help => "help",
             Self::Unavailable => "unavailable",
+            Self::ConfirmLogin => "confirm_login",
+            Self::SignedIn => "signed_in",
         }
     }
 
@@ -62,6 +70,8 @@ impl Screen {
             "travel" => Some(Self::Travel),
             "organizations" => Some(Self::Organizations),
             "help" => Some(Self::Help),
+            "confirm_login" => Some(Self::ConfirmLogin),
+            "signed_in" => Some(Self::SignedIn),
             _ => None,
         }
     }
@@ -91,6 +101,14 @@ pub struct Panel {
     /// Authorization URL is ephemeral and MUST NOT be persisted.
     #[serde(skip)]
     pub login_url: Option<Url>,
+    /// The message login start was bound to; confirm names it to Core.
+    /// Ephemeral: after a restart the owner sends /login again.
+    #[serde(skip)]
+    pub login_message_id: Option<i32>,
+    /// Core's display projection of this chat's session. Not persisted and
+    /// not authority: Core decides again on every request.
+    #[serde(skip)]
+    pub chat_session: Option<ChatSession>,
 }
 
 impl Panel {
@@ -103,6 +121,8 @@ impl Panel {
             screen: Screen::Home,
             tracked_messages: Vec::new(),
             login_url: None,
+            login_message_id: None,
+            chat_session: None,
         }
     }
 
@@ -143,6 +163,22 @@ impl Panel {
         self.revision = self.revision.saturating_add(1);
     }
 
+    fn signed_in_text(&self) -> String {
+        let Some(session) = &self.chat_session else {
+            return "Сесію чату не знайдено. Надішли /login.".to_owned();
+        };
+        let bond = session
+            .pub_dress
+            .as_deref()
+            .unwrap_or("без публічної адреси");
+        let activity = if session.active {
+            "Цей чат — активний клієнт 0x1."
+        } else {
+            "Активний інший твій клієнт (Mini App або браузер). Чат увійшов, але змінювати гру зможе після передачі активності."
+        };
+        format!("Bond: {bond}\n{activity}")
+    }
+
     /// A *trusted* Core authentication-completion handler may use these IDs
     /// for best-effort cleanup before publishing a new pinned panel.
     /// Old messages, unobserved history and Telegram deletion failures remain.
@@ -157,6 +193,7 @@ impl Panel {
 
     #[must_use]
     pub fn view_for(&self, screen: Screen, login_url: Option<&Url>, revision: u64) -> View {
+        let signed_in = self.signed_in_text();
         let (title, description) = match screen {
             Screen::Home => (
                 "0x1 · Text",
@@ -206,11 +243,20 @@ impl Panel {
                 "0x1 · Недоступно",
                 "Потрібні підтверджена AIS-ідентичність, активна Core-сесія і відповідний Gateway. Жодних даних не змінено.",
             ),
+            Screen::ConfirmLogin => (
+                "0x1 · AIS",
+                "Вхід не підтверджено. Спершу заверши вхід у браузері, потім натисни «Підтвердити вхід». Або надішли /login ще раз.",
+            ),
+            Screen::SignedIn => ("0x1 · Увійшли", signed_in.as_str()),
         };
         let mut rows = Vec::new();
-        if screen == Screen::Login {
+        if matches!(screen, Screen::Login | Screen::ConfirmLogin) {
             if let Some(url) = login_url {
                 rows.push(vec![Button::OpenUrl("Увійти через AIS", url.clone())]);
+                rows.push(vec![Button::Navigate(
+                    "Підтвердити вхід",
+                    Screen::ConfirmLogin,
+                )]);
             } else {
                 rows.push(vec![Button::Navigate("Отримати посилання", Screen::Login)]);
             }
