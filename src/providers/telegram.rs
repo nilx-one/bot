@@ -162,10 +162,14 @@ async fn confirm_login(
     sender_id: u64,
     login: Option<&LoginGateway>,
 ) -> ResponseResult<()> {
-    let pending = store
-        .panels
-        .get(&chat_id.0)
-        .and_then(|panel| panel.login_message_id.zip(panel.login_url.clone()));
+    let panel = store.panels.get(&chat_id.0);
+    if panel.is_some_and(|panel| {
+        panel.chat_session.is_some() && panel.login_url.is_some() && panel.login_message_id.is_none()
+    }) {
+        // Core already confirmed this press. Retry the UI edit without consuming it again.
+        return edit_panel(bot, store, chat_id, Screen::SignedIn, None).await;
+    }
+    let pending = panel.and_then(|panel| panel.login_message_id.zip(panel.login_url.clone()));
     let (Some(gateway), Some((login_message_id, url))) = (login, pending) else {
         return edit_panel(bot, store, chat_id, Screen::Login, None).await;
     };

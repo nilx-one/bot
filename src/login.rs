@@ -296,19 +296,36 @@ impl LoginGateway {
         if body.len() > 4_096 {
             return Err(LoginError::InvalidResponse);
         }
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(LoginError::NotConfirmable);
-        }
-        if !status.is_success() {
-            return Err(LoginError::Unavailable);
-        }
-        let session: ChatSession =
-            serde_json::from_slice(&body).map_err(|_| LoginError::InvalidResponse)?;
-        if session.profile_id.is_empty() || session.profile_id.len() > 128 {
-            return Err(LoginError::InvalidResponse);
-        }
-        Ok(session)
+        parse_confirmation(status, &body)
     }
+}
+
+fn parse_confirmation(status: reqwest::StatusCode, body: &[u8]) -> Result<ChatSession, LoginError> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: ErrorCode,
+    }
+
+    #[derive(Deserialize)]
+    struct ErrorCode {
+        code: String,
+    }
+
+    if status == reqwest::StatusCode::NOT_FOUND
+        && serde_json::from_slice::<Refusal>(body)
+            .is_ok_and(|refusal| refusal.error.code == "login_confirmation_not_found")
+    {
+        return Err(LoginError::NotConfirmable);
+    }
+    if !status.is_success() {
+        return Err(LoginError::Unavailable);
+    }
+    let session: ChatSession =
+        serde_json::from_slice(body).map_err(|_| LoginError::InvalidResponse)?;
+    if session.profile_id.is_empty() || session.profile_id.len() > 128 {
+        return Err(LoginError::InvalidResponse);
+    }
+    Ok(session)
 }
 
 fn param(url: &Url, key: &str) -> Option<String> {
@@ -528,6 +545,19 @@ mod tests {
                 Err(LoginError::InvalidResponse)
             );
         }
+    }
+
+    #[test]
+    fn confirmation_distinguishes_a_missing_attempt_from_a_missing_route() {
+        let status = reqwest::StatusCode::NOT_FOUND;
+        assert_eq!(
+            parse_confirmation(status, br#"{"error":{"code":"login_confirmation_not_found"}}"#),
+            Err(LoginError::NotConfirmable)
+        );
+        assert_eq!(
+            parse_confirmation(status, b"not found"),
+            Err(LoginError::Unavailable)
+        );
     }
 
     #[test]
