@@ -131,11 +131,14 @@ dedicated registered Telegram callback. It must bind the real Telegram sender,
 persist/consume the transaction, check signed AIS subject continuity and require
 explicit account-link confirmation before any Bond binding.
 
+AIS must register the test workload `0x1-telegram-test-bot` with its Ed25519 public key and the single `telegram.login.start` scope for audience `0x1`. The bot exchanges a fresh signed assertion for each login start. This credential authorizes only the workload.
+
 Optional test-only environment settings (all required together):
 
 ~~~sh
 export BOT_LOGIN_START_URL=https://nilx.one/api/v1/telegram/login/start
-export BOT_GATEWAY_SERVICE_TOKEN='<separate 32+ character service secret>'
+export BOT_AIS_KEY_ID='<registered key id>'
+export BOT_AIS_SIGNING_SEED='<private Ed25519 seed, unpadded base64url>'
 export BOT_OIDC_CALLBACK_URL=https://nilx.one/api/v1/telegram/login/callback
 ~~~
 
