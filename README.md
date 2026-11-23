@@ -1,6 +1,6 @@
 # 0x1 Bot — Telegram text client
 
-**Status:** isolated test transport with a single-message UI and optional AIS login-start; no verified Core product session, game writes, or production cutover yet.
+**Status:** Telegram transport with a single-message UI and optional AIS login-start; no verified Core product session, game writes, or production cutover yet.
 
 This repository is the **fourth 0x1 client**, and its first text-only client. The player uses 0x1 directly in a messenger conversation; there is no requirement to open a Web Mini App or a native app. The same Rust Core owns Bond, Avaia, inventory, interactions, sessions, progression, and spatial semantics across text and graphical clients.
 
@@ -15,7 +15,7 @@ The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-o
 
 ## What this PR implements
 
-Only a separate **test bot**, using Rust and Teloxide. Private, original human commands:
+The Telegram transport uses Rust and Teloxide. Private, original human commands:
 
 - /start: open the text client's main panel.
 - /open: show the button that opens the embedded Mini App. The WebView uses its own sign-in, and Core handles any transfer of the active game.
@@ -50,7 +50,7 @@ currently unwired, so merely deploying PR #6 will not register users.
 All settings are optional **only together**, for a trusted staging adapter:
 
 ~~~sh
-# No credentials are needed for the existing isolated test bot.
+# The Telegram bot can run independently of this staged adapter.
 # MARKET_CHANNEL_ORIGIN=https://0xda-market.nilx.one/
 # MARKET_CHANNEL_PUBLIC_TOKEN=<market-channel-api-token>
 # MARKET_CHANNEL_ASSERTION_SECRET=<market-channel-signing-secret-at-least-32-bytes>
@@ -133,7 +133,7 @@ explicit account-link confirmation before any Bond binding.
 
 AIS must register the test workload `0x1-telegram-test-bot` with its Ed25519 public key and the single `telegram.login.start` scope for audience `0x1`. The bot exchanges a fresh signed assertion for each login start. This credential authorizes only the workload.
 
-Optional test-only environment settings (all required together):
+Optional staged login settings (all required together):
 
 ~~~sh
 export BOT_LOGIN_START_URL=https://nilx.one/api/v1/telegram/login/start
@@ -148,18 +148,16 @@ rather than confirm the correct Telegram client. Without a working Gateway,
 the command answers that login is unavailable. This is not an end-to-end
 account-link or a production feature.
 
-## Test mode
+## Production runtime
 
-Use a **separate Telegram test bot token**, never the running production bot's token:
+Run the bot only on `edge-dev-1`. Provide `TELEGRAM_BOT_TOKEN` for
+`@nilxone_bot` through the deployment secret store. Use a writable persistent
+path for `BOT_UI_STATE_PATH`.
 
-~~~sh
-export BOT_RUN_MODE=test
-export TELEGRAM_BOT_TOKEN='<separate-test-bot-token>'
-cargo test --all-targets
-cargo run
-~~~
-
-An empty token or an unsupported run mode returns a configuration error without opening a polling loop. This repository has no deployed production bot and does not change the existing Web process, Telegram message IDs, native identities or infrastructure.
+Run `nilx-one-bot --check` with the deployment environment before the cutover.
+It validates configuration and checks the token's bot identity via Telegram
+`getMe`. The check exits before polling. Start `nilx-one-bot` after verifying
+that no other process polls for this bot.
 
 ## Verification
 
