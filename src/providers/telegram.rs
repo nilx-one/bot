@@ -310,13 +310,12 @@ async fn handle_callback(
     Ok(())
 }
 
-/// Only an isolated test bot may poll; never binds Telegram to a Bond here.
+/// Start polling with the Telegram client verified by the entrypoint.
 /// The file stores only chat/panel metadata, *not* AIS or Core sessions.
-pub async fn run_test_bot(token: String, login: Option<LoginGateway>) -> io::Result<()> {
+pub async fn run_bot(bot: Bot, login: Option<LoginGateway>) -> io::Result<()> {
     let path =
         std::env::var("BOT_UI_STATE_PATH").unwrap_or_else(|_| "bot-ui-state.json".to_owned());
     let state: SharedUi = Arc::new(Mutex::new(UiStore::open(PathBuf::from(path))?));
-    let bot = Bot::new(token);
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(handle_message))
         .branch(Update::filter_callback_query().endpoint(handle_callback));
