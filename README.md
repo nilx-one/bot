@@ -4,7 +4,7 @@
 
 This repository is the **fourth 0x1 client**, and its first text-only client. Players use 0x1 directly in the `@nilxone_bot` chat. The optional Mini App opens the Web interface inside the same bot. The same Rust Core owns Bond, Avaia, inventory, interactions, sessions, progression, and spatial semantics across text and graphical clients.
 
-The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-one/web) as an independent **Web presentation**. The bot is an independently deployable text runtime, but chat and embedded Mini App target **one logical Telegram product client** only after Core verifies the same Bond, Telegram host, physical device and session-bound single-use proof. This is the proposed normative revision in [0x1 #90](https://github.com/nilx-one/0x1/pull/90), tracked in [bot #2](https://github.com/nilx-one/bot/issues/2); it is not yet operational.
+The existing Telegram Mini App stays in [nilx-one/web](https://github.com/nilx-one/web) as an independent **Web presentation**. The bot is an independently deployable text runtime, but chat and embedded Mini App target **one logical Telegram product client** only after Core verifies the same Bond, Telegram host, physical device and session-bound single-use proof. The continuity contract is defined in [0x1 #90](https://github.com/nilx-one/0x1/pull/90); its implementation is tracked in [bot #2](https://github.com/nilx-one/bot/issues/2).
 
 ## Ownership
 
@@ -117,7 +117,24 @@ Every 0x1 product capability available in Web or native clients must also be usa
 
 AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/issues/3)). Core must verify the same Bond + Telegram host + physical device before chat and Mini App join the **same logical product session**; distinct surfaces keep different scoped credentials, and external browsers/other devices still obey Single Active Client. This Core continuity mechanism is pending [Core #122](https://github.com/nilx-one/core/issues/122).
 
-## Optional AIS login (separate dependent PR)
+## Telegram login and Mini App boundary
+
+The planned production target is one `@nilxone_bot` on `edge-dev-1`. Bot
+handles the `/login` command and the original-chat confirmation. The
+dedicated Core login host creates the login transaction, receives the AIS
+callback at `https://nilx.one/api/v1/telegram/login/callback`, and verifies
+the AIS Telegram binding against the initiating sender. Core uses the shared
+0x1 product database and creates the product session after that sender
+confirms in the original chat.
+
+Telegram loads `nilx-one/web@telegram` when the user opens the optional Mini
+App. The chat login uses Bot, Core and AIS.
+
+The existing Web Identity adapter is transitional. Route the Telegram login
+paths to the Core host and give Telegram updates to a single consumer at
+cutover. The host work is tracked in [Core #164](https://github.com/nilx-one/core/pull/164).
+
+### Staged AIS login-start adapter
 
 The explicit /login command asks the authenticated Core-owned Gateway for a
 short-lived, single-use OIDC transaction, and only then sends the user to the
