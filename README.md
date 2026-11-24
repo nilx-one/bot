@@ -163,11 +163,20 @@ export BOT_LOGIN_START_URL=https://nilx.one/api/v1/telegram/login/start
 export BOT_OIDC_CALLBACK_URL=https://nilx.one/api/v1/telegram/login/callback
 ~~~
 
-`BOT_LOGIN_START_URL` may name the login host's internal alias over plain
-HTTP, such as `http://nilxone-login-host:8080/api/v1/telegram/login/start`;
-any public name must use HTTPS. The callback stays the AIS-registered public
-URL. The retired `BOT_AIS_SIGNING_SEED`, `BOT_AIS_KEY_ID` and
+`BOT_LOGIN_START_URL` must be the HTTPS login endpoint on the default port.
+Confirmation goes to the same host. A host name proves nothing about the
+network it resolves on, so plain HTTP is never accepted, not even for an
+"internal" name. The retired `BOT_AIS_SIGNING_SEED`, `BOT_AIS_KEY_ID` and
 `BOT_GATEWAY_SERVICE_TOKEN` stop the bot at startup if they are still set.
+
+Trust boundary. The shared Bot API token authenticates only the **workload**:
+the request comes from the `@nilxone_bot` runtime. It never establishes who the
+user is or what they consent to. The user's identity comes from AIS: the
+browser sign-in and its Telegram binding. Their consent comes from the
+confirmation pressed by the original sender in the original private chat. The
+token is sensitive in both processes, the bot and the login host. Rotating it
+in @BotFather invalidates both at once, so a rotation must update the bot, the
+login host and Identity together.
 
 ## Production runtime
 

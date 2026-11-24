@@ -121,10 +121,12 @@ impl LoginGateway {
         }
         let start_url = Url::parse(start_url).map_err(|_| "invalid gateway URL")?;
         let callback = Url::parse(&registered_callback).map_err(|_| "invalid callback URL")?;
-        let local_http = start_url.scheme() == "http"
-            && matches!(start_url.host_str(), Some(host) if !host.contains('.'));
-        if !(start_url.scheme() == "https" || local_http)
+        // Start and confirm always go to this one HTTPS endpoint: a host name
+        // says nothing about the network it resolves on, so there is no
+        // plain-HTTP exception for "internal" names.
+        if start_url.scheme() != "https"
             || start_url.host_str().is_none()
+            || start_url.port().is_some()
             || !start_url.username().is_empty()
             || start_url.password().is_some()
             || start_url.fragment().is_some()
@@ -421,23 +423,25 @@ mod tests {
             gateway.signature(1_000, CONFIRM_PATH, br#"{"version":1}"#),
             gateway.signature(1_000, START_PATH, br#"{"version":1}"#)
         );
-        // An internal host alias may use plain HTTP; a public name may not.
-        assert!(
-            LoginGateway::new(
-                "http://nilxone-login-host:8080/api/v1/telegram/login/start",
-                "123456:test-bot-token",
-                CALLBACK.into(),
-            )
-            .is_ok()
-        );
-        assert!(
-            LoginGateway::new(
-                "http://nilx.one/api/v1/telegram/login/start",
-                "123456:test-bot-token",
-                CALLBACK.into(),
-            )
-            .is_err()
-        );
+        // Only the HTTPS login endpoint itself: no plain HTTP, whatever the
+        // host name, no explicit port, no credentials, query or other path.
+        for refused in [
+            "http://nilxone-login-host:8080/api/v1/telegram/login/start",
+            "http://nilxone-login-host/api/v1/telegram/login/start",
+            "http://localhost/api/v1/telegram/login/start",
+            "http://127.0.0.1/api/v1/telegram/login/start",
+            "http://nilx.one/api/v1/telegram/login/start",
+            "https://nilx.one:8443/api/v1/telegram/login/start",
+            "https://user@nilx.one/api/v1/telegram/login/start",
+            "https://nilx.one/api/v1/telegram/login/start?x=1",
+            "https://nilx.one/api/v1/telegram/login/confirm",
+            "ftp://nilx.one/api/v1/telegram/login/start",
+        ] {
+            assert!(
+                LoginGateway::new(refused, "123456:test-bot-token", CALLBACK.into()).is_err(),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
