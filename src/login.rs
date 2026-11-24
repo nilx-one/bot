@@ -6,19 +6,14 @@
 //! press. It does not construct its own state/nonce, verify identity,
 //! exchange codes, hold Bond sessions or tokens, or link accounts.
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ring::{
-    rand::{SecureRandom as _, SystemRandom},
-    signature::Ed25519KeyPair,
-};
+use ring::hmac;
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const TOKEN_ENDPOINT: &str = "https://auth.aiaiaiai.org/token";
-const CLIENT_ID: &str = "0x1-telegram-test-bot";
-const LOGIN_SCOPE: &str = "telegram.login.start";
+/// `nilxone_api::bot_login::SIGNATURE_HEADER`.
+const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
 const START_PATH: &str = "/api/v1/telegram/login/start";
 /// `nilxone_api::bot_login::CONFIRM_PATH`, on the same product host.
 const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
@@ -34,8 +29,9 @@ use url::Url;
 pub struct LoginGateway {
     http: Client,
     start_url: Url,
-    key: Arc<Ed25519KeyPair>,
-    kid: String,
+    /// Derived from the bot's own Telegram token: the bot holds no other
+    /// credential for the product host.
+    key: Arc<hmac::Key>,
     registered_callback: String,
 }
 
@@ -87,42 +83,50 @@ struct StartResponse {
 }
 
 impl LoginGateway {
-    /// Disabled if all settings are missing; partially configured settings
-    /// fail at startup, rather than running with a weaker login flow.
-    pub fn from_env() -> Result<Option<Self>, &'static str> {
-        let start = std::env::var("BOT_LOGIN_START_URL").ok();
-        if std::env::var_os("BOT_GATEWAY_SERVICE_TOKEN").is_some() {
-            return Err("replace BOT_GATEWAY_SERVICE_TOKEN with the AIS bot signing key");
+    /// Disabled if both settings are missing; a partial configuration fails at
+    /// startup rather than running with a weaker login flow. `bot_token` is
+    /// the `@nilxone_bot` token the bot already runs with.
+    pub fn from_env(bot_token: &str) -> Result<Option<Self>, &'static str> {
+        for retired in [
+            "BOT_GATEWAY_SERVICE_TOKEN",
+            "BOT_AIS_SIGNING_SEED",
+            "BOT_AIS_KEY_ID",
+        ] {
+            if std::env::var_os(retired).is_some() {
+                return Err(
+                    "the bot signs login requests with TELEGRAM_BOT_TOKEN; remove BOT_AIS_SIGNING_SEED, BOT_AIS_KEY_ID and BOT_GATEWAY_SERVICE_TOKEN",
+                );
+            }
         }
-        let seed = std::env::var("BOT_AIS_SIGNING_SEED").ok();
-        let kid = std::env::var("BOT_AIS_KEY_ID").ok();
+        let start = std::env::var("BOT_LOGIN_START_URL").ok();
         let callback = std::env::var("BOT_OIDC_CALLBACK_URL").ok();
-        match (start, seed, kid, callback) {
-            (None, None, None, None) => Ok(None),
-            (Some(start), Some(seed), Some(kid), Some(callback)) => {
-                Self::new(&start, &seed, kid, callback).map(Some)
-            }
-            _ => {
-                Err("configure the login start URL, AIS signing seed, key ID and callback together")
-            }
+        match (start, callback) {
+            (None, None) => Ok(None),
+            (Some(start), Some(callback)) => Self::new(&start, bot_token, callback).map(Some),
+            _ => Err("configure BOT_LOGIN_START_URL and BOT_OIDC_CALLBACK_URL together"),
         }
     }
 
     fn new(
         start_url: &str,
-        seed: &str,
-        kid: String,
+        bot_token: &str,
         registered_callback: String,
     ) -> Result<Self, &'static str> {
-        let seed = URL_SAFE_NO_PAD
-            .decode(seed)
-            .map_err(|_| "invalid AIS bot signing seed")?;
-        let key = Ed25519KeyPair::from_seed_unchecked(&seed)
-            .map_err(|_| "invalid AIS bot signing seed")?;
+        let bot_token = bot_token.trim();
+        let valid_token = bot_token.split_once(':').is_some_and(|(id, secret)| {
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && !secret.is_empty()
+        });
+        if !valid_token {
+            return Err("TELEGRAM_BOT_TOKEN is not a Telegram Bot API token");
+        }
         let start_url = Url::parse(start_url).map_err(|_| "invalid gateway URL")?;
         let callback = Url::parse(&registered_callback).map_err(|_| "invalid callback URL")?;
+        // Start and confirm always go to this one HTTPS endpoint: a host name
+        // says nothing about the network it resolves on, so there is no
+        // plain-HTTP exception for "internal" names.
         if start_url.scheme() != "https"
             || start_url.host_str().is_none()
+            || start_url.port().is_some()
             || !start_url.username().is_empty()
             || start_url.password().is_some()
             || start_url.fragment().is_some()
@@ -135,92 +139,63 @@ impl LoginGateway {
             || callback.password().is_some()
             || callback.fragment().is_some()
             || callback.query().is_some()
-            || kid.is_empty()
-            || kid.len() > 64
-            || !kid
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
         {
-            return Err("invalid secure AIS gateway configuration");
+            return Err("invalid secure login host configuration");
         }
         let http = Client::builder()
             .redirect(Policy::none())
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(|_| "failed to initialize the HTTP transport")?;
+        let derived = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, b"0x1-telegram-bot-request-v1"),
+            bot_token.as_bytes(),
+        );
         Ok(Self {
             http,
             start_url,
-            key: Arc::new(key),
-            kid,
+            key: Arc::new(hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref())),
             registered_callback,
         })
     }
 
-    fn assertion(&self) -> Result<String, LoginError> {
-        let mut id = [0u8; 16];
-        SystemRandom::new()
-            .fill(&mut id)
-            .map_err(|_| LoginError::Unavailable)?;
+    /// `nilxone_api::bot_login::sign_request`:
+    /// `t=<unix>,v1=<hex HMAC-SHA256(key, "<t>\n<path>\n<body>")>`.
+    fn signature(&self, timestamp: u64, path: &str, body: &[u8]) -> String {
+        let mut context = hmac::Context::with_key(&self.key);
+        context.update(timestamp.to_string().as_bytes());
+        context.update(b"\n");
+        context.update(path.as_bytes());
+        context.update(b"\n");
+        context.update(body);
+        let mut value = format!("t={timestamp},v1=");
+        for byte in context.sign().as_ref() {
+            use std::fmt::Write as _;
+            let _ = write!(value, "{byte:02x}");
+        }
+        value
+    }
+
+    async fn post_signed(
+        &self,
+        path: &str,
+        request: &StartRequest,
+    ) -> Result<reqwest::Response, LoginError> {
+        let body = serde_json::to_vec(request).map_err(|_| LoginError::InvalidResponse)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| LoginError::Unavailable)?
             .as_secs();
-        let header = serde_json::json!({"alg":"EdDSA", "kid": self.kid});
-        let claims = serde_json::json!({"iss":CLIENT_ID, "sub":CLIENT_ID, "aud":TOKEN_ENDPOINT,
-            "iat":now, "exp":now+60, "jti":URL_SAFE_NO_PAD.encode(id)});
-        let signed = format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(header.to_string()),
-            URL_SAFE_NO_PAD.encode(claims.to_string())
-        );
-        let signature = self.key.sign(signed.as_bytes());
-        Ok(format!(
-            "{signed}.{}",
-            URL_SAFE_NO_PAD.encode(signature.as_ref())
-        ))
-    }
-
-    async fn access_token(&self) -> Result<String, LoginError> {
-        #[derive(Deserialize)]
-        struct Grant {
-            access_token: String,
-            token_type: String,
-            scope: String,
-            expires_in: u64,
-        }
-        let assertion = self.assertion()?;
-        let response = self
-            .http
-            .post(TOKEN_ENDPOINT)
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("audience", "0x1"),
-                ("scope", LOGIN_SCOPE),
-                (
-                    "client_assertion_type",
-                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                ),
-                ("client_assertion", assertion.as_str()),
-            ])
+        let mut url = self.start_url.clone();
+        url.set_path(path);
+        self.http
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(SIGNATURE_HEADER, self.signature(now, path, &body))
+            .body(body)
             .send()
             .await
-            .map_err(|_| LoginError::Unavailable)?;
-        if !response.status().is_success() {
-            return Err(LoginError::Unavailable);
-        }
-        let grant: Grant = response
-            .json()
-            .await
-            .map_err(|_| LoginError::InvalidResponse)?;
-        if grant.scope != LOGIN_SCOPE
-            || !grant.token_type.eq_ignore_ascii_case("Bearer")
-            || !(1..=300).contains(&grant.expires_in)
-            || !(1..=4096).contains(&grant.access_token.len())
-        {
-            return Err(LoginError::InvalidResponse);
-        }
-        Ok(grant.access_token)
+            .map_err(|_| LoginError::Unavailable)
     }
 
     /// A verified Telegram update supplies these actor/message IDs. The
@@ -238,14 +213,7 @@ impl LoginGateway {
             return Err(LoginError::InvalidResponse);
         }
         let request = StartRequest::from_verified_update(provider_actor_id, chat_id, message_id);
-        let result = self
-            .http
-            .post(self.start_url.clone())
-            .bearer_auth(self.access_token().await?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|_| LoginError::Unavailable)?;
+        let result = self.post_signed(START_PATH, &request).await?;
         if !result.status().is_success() {
             return Err(LoginError::Unavailable);
         }
@@ -281,16 +249,7 @@ impl LoginGateway {
             return Err(LoginError::InvalidResponse);
         }
         let request = StartRequest::from_verified_update(sender_id, chat_id, login_message_id);
-        let mut url = self.start_url.clone();
-        url.set_path(CONFIRM_PATH);
-        let result = self
-            .http
-            .post(url)
-            .bearer_auth(self.access_token().await?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|_| LoginError::Unavailable)?;
+        let result = self.post_signed(CONFIRM_PATH, &request).await?;
         let status = result.status();
         let body = result.bytes().await.map_err(|_| LoginError::Unavailable)?;
         if body.len() > 4_096 {
@@ -433,8 +392,7 @@ mod tests {
     async fn login_start_rejects_invalid_message_id_before_network() {
         let gateway = LoginGateway::new(
             "https://example.com/api/v1/telegram/login/start",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "test-key".into(),
+            "123456:test-bot-token",
             CALLBACK.into(),
         )
         .unwrap();
@@ -449,41 +407,41 @@ mod tests {
     }
 
     #[test]
-    fn signed_workload_assertions_are_fresh_and_target_only_ais() {
-        use ring::signature::{ED25519, KeyPair, UnparsedPublicKey};
+    fn requests_are_signed_with_the_bot_token_like_core_verifies_them() {
         let gateway = LoginGateway::new(
             "https://nilx.one/api/v1/telegram/login/start",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "test-key".into(),
+            "123456:test-bot-token",
             CALLBACK.into(),
         )
         .unwrap();
-        let assertion = gateway.assertion().unwrap();
-        let (signed, signature) = assertion.rsplit_once('.').unwrap();
-        UnparsedPublicKey::new(&ED25519, gateway.key.public_key().as_ref())
-            .verify(
-                signed.as_bytes(),
-                &URL_SAFE_NO_PAD.decode(signature).unwrap(),
-            )
-            .unwrap();
-        let decode = |s: &str| -> serde_json::Value {
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(s).unwrap()).unwrap()
-        };
-        let (header, claims) = signed.split_once('.').unwrap();
-        assert_eq!(decode(header)["kid"], "test-key");
-        let claims = decode(claims);
-        assert_eq!(claims["iss"], CLIENT_ID);
-        assert_eq!(claims["sub"], CLIENT_ID);
-        assert_eq!(claims["aud"], TOKEN_ENDPOINT);
+        // The vector nilxone_api::bot_login::sign_request produces.
         assert_eq!(
-            claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
-            60
+            gateway.signature(1_000, START_PATH, br#"{"version":1}"#),
+            "t=1000,v1=c2426fd9704a0ebc90df96d56d8df7a9befc09cc46a2c58b2f8bb2909f167cfe"
         );
-        let next = gateway.assertion().unwrap();
         assert_ne!(
-            claims["jti"],
-            decode(next.split('.').nth(1).unwrap())["jti"]
+            gateway.signature(1_000, CONFIRM_PATH, br#"{"version":1}"#),
+            gateway.signature(1_000, START_PATH, br#"{"version":1}"#)
         );
+        // Only the HTTPS login endpoint itself: no plain HTTP, whatever the
+        // host name, no explicit port, no credentials, query or other path.
+        for refused in [
+            "http://nilxone-login-host:8080/api/v1/telegram/login/start",
+            "http://nilxone-login-host/api/v1/telegram/login/start",
+            "http://localhost/api/v1/telegram/login/start",
+            "http://127.0.0.1/api/v1/telegram/login/start",
+            "http://nilx.one/api/v1/telegram/login/start",
+            "https://nilx.one:8443/api/v1/telegram/login/start",
+            "https://user@nilx.one/api/v1/telegram/login/start",
+            "https://nilx.one/api/v1/telegram/login/start?x=1",
+            "https://nilx.one/api/v1/telegram/login/confirm",
+            "ftp://nilx.one/api/v1/telegram/login/start",
+        ] {
+            assert!(
+                LoginGateway::new(refused, "123456:test-bot-token", CALLBACK.into()).is_err(),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
@@ -491,8 +449,7 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "test-key".into(),
+                "123456:test-bot-token",
                 "https://nilx.one/auth/callback".into()
             )
             .is_err()
@@ -504,8 +461,7 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "http://example.com/api/v1/telegram/login/start",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "test-key".into(),
+                "123456:test-bot-token",
                 CALLBACK.into()
             )
             .is_err()
@@ -513,8 +469,7 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "short",
-                "test-key".into(),
+                "not-a-bot-token",
                 CALLBACK.into()
             )
             .is_err()
@@ -522,8 +477,7 @@ mod tests {
         assert!(
             LoginGateway::new(
                 "https://example.com/api/v1/telegram/login/start",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "test-key".into(),
+                "123456:test-bot-token",
                 CALLBACK.into()
             )
             .is_ok()
@@ -534,8 +488,7 @@ mod tests {
     async fn confirm_rejects_another_chat_before_network() {
         let gateway = LoginGateway::new(
             "https://example.com/api/v1/telegram/login/start",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "test-key".into(),
+            "123456:test-bot-token",
             CALLBACK.into(),
         )
         .unwrap();
