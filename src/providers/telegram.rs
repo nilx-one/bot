@@ -13,6 +13,7 @@ use std::{
 };
 
 use teloxide::{
+    ApiError, RequestError,
     dispatching::UpdateFilterExt,
     dptree,
     prelude::*,
@@ -128,9 +129,29 @@ async fn edit_panel(
     };
     let revision = panel.revision.saturating_add(1);
     let (view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
-    bot.edit_message_text(chat_id, MessageId(panel.message_id), view.text)
-        .reply_markup(keyboard)
-        .await?;
+    let edited = bot
+        .edit_message_text(chat_id, MessageId(panel.message_id), view.text.clone())
+        .reply_markup(keyboard.clone())
+        .await;
+    match edited {
+        Ok(_) | Err(RequestError::Api(ApiError::MessageNotModified)) => {}
+        // The panel is gone (deleted, chat cleared) or can no longer be
+        // edited. Without a new one every command would fail silently.
+        Err(RequestError::Api(
+            ApiError::MessageToEditNotFound
+            | ApiError::MessageCantBeEdited
+            | ApiError::MessageIdInvalid,
+        )) => {
+            let sent = bot
+                .send_message(chat_id, view.text)
+                .reply_markup(keyboard)
+                .await?;
+            if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+                panel.message_id = sent.id.0;
+            }
+        }
+        Err(error) => return Err(error),
+    }
     if let Some(panel) = store.panels.get_mut(&chat_id.0) {
         panel.change_screen(screen, login_url);
     }
@@ -691,6 +712,15 @@ mod transport_integration_tests {
     fn telegram_api(
         expected: Vec<&'static str>,
     ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
+        telegram_api_with(expected, false)
+    }
+
+    /// `gone_panel`: every editMessageText fails as Telegram does once the
+    /// panel message was deleted.
+    fn telegram_api_with(
+        expected: Vec<&'static str>,
+        gone_panel: bool,
+    ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let bot = Bot::new("123:TEST")
@@ -739,6 +769,22 @@ mod transport_integration_tests {
                     serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
+                if gone_panel && method == "editMessageText" {
+                    let response = json!({
+                        "ok": false,
+                        "error_code": 400,
+                        "description": "Bad Request: message to edit not found"
+                    })
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        response.len(),
+                        response
+                    )
+                    .unwrap();
+                    continue;
+                }
                 let result = if method == "sendMessage" || method == "editMessageText" {
                     json!({
                         "message_id": 100,
@@ -803,6 +849,25 @@ mod transport_integration_tests {
             Arc::new(Mutex::new(UiStore::open(path.clone()).unwrap())),
             path,
         )
+    }
+
+    #[tokio::test]
+    async fn a_deleted_panel_is_sent_again_instead_of_going_silent() {
+        let (bot, server) = telegram_api_with(vec!["editMessageText", "sendMessage"], true);
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 10));
+        handle_message(bot, incoming(11, "/help"), state.clone(), None)
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0].1["message_id"], 10);
+        assert_eq!(requests[1].0, "sendMessage");
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.message_id, 100, "later edits target the new panel");
+        assert_eq!(panel.screen, Screen::Help);
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
