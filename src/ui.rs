@@ -31,8 +31,11 @@ pub enum Screen {
     Organizations,
     Help,
     Unavailable,
-    /// The sender pressed confirm after the browser step.
+    /// A confirm press from a panel sent before the bot claimed logins by
+    /// itself. Kept so old buttons still answer.
     ConfirmLogin,
+    /// The browser step failed or the login expired.
+    LoginFailed,
     /// Core opened this chat's own product session.
     SignedIn,
 }
@@ -53,6 +56,7 @@ impl Screen {
             Self::Help => "help",
             Self::Unavailable => "unavailable",
             Self::ConfirmLogin => "confirm_login",
+            Self::LoginFailed => "login_failed",
             Self::SignedIn => "signed_in",
         }
     }
@@ -71,6 +75,7 @@ impl Screen {
             "organizations" => Some(Self::Organizations),
             "help" => Some(Self::Help),
             "confirm_login" => Some(Self::ConfirmLogin),
+            "login_failed" => Some(Self::LoginFailed),
             "signed_in" => Some(Self::SignedIn),
             _ => None,
         }
@@ -205,7 +210,7 @@ impl Panel {
             Screen::Login => (
                 "0x1 · AIS",
                 if login_url.is_some() {
-                    "Натисніть «Увійти»: вхід через AIS відкриється всередині Telegram і сам закриється. Потім натисніть «Підтвердити вхід»."
+                    "Натисніть «Увійти»: вхід через AIS відкриється всередині Telegram і сам закриється. Щойно він завершиться, тут зʼявиться «Увійшли»."
                 } else {
                     "AIS-авторизація недоступна або потребує нового посилання. Натисніть «Отримати посилання»."
                 },
@@ -248,7 +253,11 @@ impl Panel {
             ),
             Screen::ConfirmLogin => (
                 "0x1 · AIS",
-                "Вхід не підтверджено. Спершу заверши вхід у браузері, потім натисни «Підтвердити вхід». Або надішли /login ще раз.",
+                "Вхід ще не завершено. Заверши його у вікні «Увійти» — результат зʼявиться тут сам. Або надішли /login ще раз.",
+            ),
+            Screen::LoginFailed => (
+                "0x1 · AIS",
+                "Вхід не вдався або час на нього минув. Нічого не змінено — спробуй ще раз.",
             ),
             Screen::SignedIn => ("0x1 · Увійшли", signed_in.as_str()),
         };
@@ -256,13 +265,12 @@ impl Panel {
         if matches!(screen, Screen::Login | Screen::ConfirmLogin) {
             if let Some(url) = login_url {
                 rows.push(vec![Button::OpenLoginPage("Увійти", url.clone())]);
-                rows.push(vec![Button::Navigate(
-                    "Підтвердити вхід",
-                    Screen::ConfirmLogin,
-                )]);
             } else {
                 rows.push(vec![Button::Navigate("Отримати посилання", Screen::Login)]);
             }
+        }
+        if screen == Screen::LoginFailed {
+            rows.push(vec![Button::Navigate("Спробувати ще", Screen::Login)]);
         }
         if screen == Screen::MiniApp {
             rows.push(vec![Button::OpenMiniApp]);

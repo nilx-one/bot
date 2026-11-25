@@ -5,7 +5,12 @@
 //! only a trusted Core callback can later complete authentication and
 //! publish the new pinned dashboard. Telegram messages are never Core truth.
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use teloxide::{
     dispatching::UpdateFilterExt,
@@ -19,11 +24,17 @@ use tokio::sync::Mutex;
 
 use crate::{
     application::{PublicAction, classify_message},
-    login::{LoginError, LoginGateway},
+    login::{ChatSession, LoginError, LoginGateway},
     ui::{Button, Panel, Screen, UiStore, View},
 };
 
 const MINI_APP_URL: &str = "https://nilx.one/telegram/";
+/// How often the bot asks Core whether the browser step of a `/login` is
+/// done. Core allows 40 asks a minute per sender.
+const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(2_500);
+/// Core keeps a login five minutes before the browser step and a verified
+/// callback five more; after that the answer can only be a failure.
+const LOGIN_WAIT: Duration = Duration::from_secs(600);
 
 type SharedUi = Arc<Mutex<UiStore>>;
 
@@ -129,6 +140,7 @@ async fn edit_panel(
 
 async fn update_login(
     bot: &Bot,
+    state: &SharedUi,
     store: &mut UiStore,
     chat_id: ChatId,
     sender_id: u64,
@@ -152,7 +164,93 @@ async fn update_login(
     if let Some(panel) = store.panels.get_mut(&chat_id.0) {
         panel.login_message_id = started.then_some(update_message_id);
     }
+    persist(store);
+    if started && let Some(gateway) = login {
+        tokio::spawn(await_login(
+            bot.clone(),
+            Arc::clone(state),
+            gateway.clone(),
+            chat_id,
+            sender_id,
+            update_message_id,
+        ));
+    }
     Ok(())
+}
+
+/// Whether `login_message_id` is still this chat's pending `/login`. A newer
+/// `/login`, a legacy confirm press or a finished login ends the wait.
+fn awaits(store: &UiStore, chat_id: ChatId, login_message_id: i32) -> bool {
+    store
+        .panels
+        .get(&chat_id.0)
+        .is_some_and(|panel| panel.login_message_id == Some(login_message_id))
+}
+
+enum Claim {
+    /// Ask again: the browser step is unfinished or Core was briefly away.
+    Waiting,
+    /// The login is over: signed in, or failed or expired (`None`).
+    Done(Option<ChatSession>),
+}
+
+fn after_claim(outcome: Result<ChatSession, LoginError>, expired: bool) -> Claim {
+    match outcome {
+        Ok(session) => Claim::Done(Some(session)),
+        Err(LoginError::NotConfirmable | LoginError::Unavailable) if !expired => Claim::Waiting,
+        Err(error) => {
+            tracing::info!(?error, "Telegram login did not complete");
+            Claim::Done(None)
+        }
+    }
+}
+
+/// After `/login`, claim the verified browser step as soon as Core has it,
+/// so the chat shows the result without a press. Core already proved at the
+/// callback that the AIS identity belongs to this sender. A failure or the
+/// end of the wait shows that the login did not happen.
+async fn await_login(
+    bot: Bot,
+    state: SharedUi,
+    gateway: LoginGateway,
+    chat_id: ChatId,
+    sender_id: u64,
+    login_message_id: i32,
+) {
+    let deadline = Instant::now() + LOGIN_WAIT;
+    loop {
+        tokio::time::sleep(LOGIN_POLL_INTERVAL).await;
+        if !awaits(&*state.lock().await, chat_id, login_message_id) {
+            return;
+        }
+        let outcome = gateway
+            .confirm(sender_id, chat_id.0, login_message_id)
+            .await;
+        let Claim::Done(session) = after_claim(outcome, Instant::now() >= deadline) else {
+            continue;
+        };
+        let mut store = state.lock().await;
+        if !awaits(&store, chat_id, login_message_id) {
+            return;
+        }
+        let signed_in = session.is_some();
+        if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+            panel.login_message_id = None;
+            if session.is_some() {
+                panel.chat_session = session;
+            }
+        }
+        let screen = if signed_in {
+            Screen::SignedIn
+        } else {
+            Screen::LoginFailed
+        };
+        if let Err(error) = edit_panel(&bot, &mut store, chat_id, screen, None).await {
+            tracing::warn!(%error, "cannot show the Telegram login result");
+            persist(&store);
+        }
+        return;
+    }
 }
 
 /// The owner pressed confirm on the current panel. Core decides whether the
@@ -192,6 +290,12 @@ async fn confirm_login(
         Err(LoginError::NotConfirmable) => {
             // Keep the same link: the browser step may still be unfinished.
             edit_panel(bot, store, chat_id, Screen::ConfirmLogin, Some(url)).await
+        }
+        Err(LoginError::Failed) => {
+            if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+                panel.login_message_id = None;
+            }
+            edit_panel(bot, store, chat_id, Screen::LoginFailed, None).await
         }
         Err(error) => {
             tracing::warn!(?error, "Telegram login confirmation unavailable");
@@ -295,6 +399,7 @@ async fn handle_message(
         PublicAction::StartLogin => {
             update_login(
                 &bot,
+                &state,
                 &mut store,
                 message.chat.id,
                 sender.id.0,
@@ -347,6 +452,7 @@ async fn handle_callback(
         Some(Screen::Login) => {
             update_login(
                 &bot,
+                &state,
                 &mut store,
                 chat,
                 query.from.id.0,
@@ -488,7 +594,45 @@ mod tests {
     }
 
     #[test]
-    fn login_link_comes_with_a_confirm_button_and_the_session_is_core_projection() {
+    fn the_wait_ends_on_a_session_a_failure_or_expiry_only() {
+        let session = ChatSession {
+            profile_id: "p".into(),
+            pub_dress: None,
+            active: true,
+        };
+        assert!(matches!(
+            after_claim(Ok(session.clone()), true),
+            Claim::Done(Some(found)) if found == session
+        ));
+        for waiting in [LoginError::NotConfirmable, LoginError::Unavailable] {
+            assert!(matches!(after_claim(Err(waiting), false), Claim::Waiting));
+            assert!(matches!(after_claim(Err(waiting), true), Claim::Done(None)));
+        }
+        for over in [LoginError::Failed, LoginError::InvalidResponse] {
+            assert!(matches!(after_claim(Err(over), false), Claim::Done(None)));
+        }
+    }
+
+    #[test]
+    fn only_the_latest_login_message_is_awaited() {
+        let mut store = UiStore::open(
+            std::env::temp_dir().join(format!("nilx-bot-awaits-{}.json", std::process::id())),
+        )
+        .unwrap();
+        let chat = ChatId(42);
+        assert!(!awaits(&store, chat, 7));
+        let mut panel = Panel::new(42, 10);
+        panel.login_message_id = Some(7);
+        store.panels.insert(42, panel);
+        assert!(awaits(&store, chat, 7));
+        assert!(!awaits(&store, chat, 6), "a newer /login replaced it");
+        assert!(!awaits(&store, ChatId(43), 7));
+        store.panels.get_mut(&42).unwrap().login_message_id = None;
+        assert!(!awaits(&store, chat, 7), "the login is over");
+    }
+
+    #[test]
+    fn login_link_needs_no_confirm_button_and_the_session_is_core_projection() {
         let mut panel = Panel::new(8, 10);
         let url = url::Url::parse("https://auth.aiaiaiai.org/0x1?state=s").unwrap();
         for screen in [Screen::Login, Screen::ConfirmLogin] {
@@ -499,8 +643,16 @@ mod tests {
                 json.contains(r#""web_app":{"url":"https://auth.aiaiaiai.org/0x1?state=s"}"#),
                 "{screen:?}: {json}"
             );
-            assert!(json.contains("ui:3:confirm_login"), "{screen:?}");
+            // The bot claims the login by itself: nothing to press.
+            assert!(!json.contains("confirm_login"), "{screen:?}");
         }
+        let (view, keyboard) = render_panel(&panel, Screen::LoginFailed, None, 3);
+        assert!(view.text.contains("Вхід не вдався"), "{}", view.text);
+        assert!(
+            serde_json::to_string(&keyboard)
+                .unwrap()
+                .contains("ui:3:login")
+        );
         let (_, keyboard) = render_panel(&panel, Screen::Login, None, 3);
         assert!(
             !serde_json::to_string(&keyboard)
