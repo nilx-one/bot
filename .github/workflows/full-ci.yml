@@ -10,6 +10,10 @@ on:
 
 permissions:
   contents: read
+  # Only a master push uses these: it attests the bot binary it verified, so
+  # aiaiaiai-org/infra can deliver it without holding any credential here.
+  id-token: write
+  attestations: write
 
 concurrency:
   group: bot-full-ci-${{ github.ref }}
@@ -46,6 +50,11 @@ jobs:
             exit 1
           fi
           grep -F 'TELEGRAM_BOT_TOKEN is required' telegram-bot-check.log
+      - name: Attest the verified Telegram bot package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/x86_64-unknown-linux-musl/release/nilx-one-bot
       - name: Preserve verified Telegram bot package
         uses: actions/upload-artifact@v4
         with:
