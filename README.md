@@ -31,7 +31,7 @@ Forwarded messages, bot senders and groups are not eligible command sources. The
 - The first private interaction sends one unpinned login panel. Subsequent commands and button presses call `editMessageText` for that same `message_id`; callbacks check sender, originating message and revision to reject stale presses.
 - The test adapter persists **presentation metadata only** in `BOT_UI_STATE_PATH` (default `bot-ui-state.json`): chat, owner, panel message ID, current screen and recently observed message IDs. It never persists an AIS authorization URL, password, token, game state, Core session or Bond identity.
 - `/subscription` is a navigation shortcut. Without a real verified Core session, its screen reports unavailability; it does not fabricate Special/Exclusive status. No arbitrary text prompts navigate the world.
-- **Sign-in completion:** `/login` asks the Core login host to start a transaction. «Увійти» then opens the AIS sign-in page `auth.aiaiaiai.org/0x1` as a Telegram **Mini App button**. It is the AIS page, not the game Mini App. Inside Telegram the page passes Telegram's signed `initData` through AIS to the login host, which verifies it with the bot token against the `/login` sender. After sign-in the page closes and the player is back in the chat. «Підтвердити вхід» sends the sender, chat and original `/login` message to `POST /api/v1/telegram/login/confirm`. Core then opens this chat's product session in the shared product database. The bot holds no token and keeps only `{profile_id, pub_dress, active}` for display.
+- **Sign-in completion:** `/login` asks the Core login host to start a transaction. «Увійти» then opens the AIS sign-in page `auth.aiaiaiai.org/0x1` as a Telegram **Mini App button**. It is the AIS page, not the game Mini App. Inside Telegram the page passes Telegram's signed `initData` through AIS to the login host, which verifies it with the bot token against the `/login` sender. After sign-in the page plays its stages and closes, and the player is back in the chat. Right after `/login` the bot asks `POST /api/v1/telegram/login/confirm` every 2.5 seconds, for at most 10 minutes, with the sender, chat and original `/login` message. As soon as the browser step is verified, Core opens this chat's product session in the shared product database and the panel shows «Увійшли». A failed browser step (`login_failed`) or the end of the wait shows «Вхід не вдався» with «Спробувати ще». Nothing is pressed in the chat. The bot holds no token and keeps only `{profile_id, pub_dress, active}` for display.
 - On a future verified Core login-completion event, the bot must delete *observed and deletable* prior messages best-effort (Telegram limits history deletion, including a 48-hour window), send and pin one new home panel, then edit that same panel. Never claim a whole chat was cleared. The Core callback and this post-auth transition are separate dependent work, not operational in this test UI.
 - A restarted bot reuses the stored panel ID when available. If Telegram deleted or invalidated that message, a failure is logged rather than silently producing multiple panels. Operational recovery will require a reviewed explicit reset path.
 
@@ -120,12 +120,12 @@ AIS sign-in is a separate dependency ([bot #3](https://github.com/nilx-one/bot/i
 ## Telegram login and Mini App boundary
 
 The planned production target is one `@nilxone_bot` on `edge-dev-1`. Bot
-handles the `/login` command and the original-chat confirmation. The
+handles the `/login` command and claims the verified login for it. The
 dedicated Core login host creates the login transaction, receives the AIS
 callback at `https://nilx.one/api/v1/telegram/login/callback`, and verifies
 the AIS Telegram binding against the initiating sender. Core uses the shared
-0x1 product database and creates the product session after that sender
-confirms in the original chat.
+0x1 product database and creates the product session when the bot claims
+the verified callback for the original `/login` message.
 
 Telegram loads `nilx-one/web@telegram` when the user opens the optional Mini
 App. The chat login uses Bot, Core and AIS.
@@ -172,8 +172,9 @@ network it resolves on, so plain HTTP is never accepted, not even for an
 Trust boundary. The shared Bot API token authenticates only the **workload**:
 the request comes from the `@nilxone_bot` runtime. It never establishes who the
 user is or what they consent to. The user's identity comes from AIS: the
-browser sign-in and its Telegram binding. Their consent comes from the
-confirmation pressed by the original sender in the original private chat. The
+browser sign-in and its Telegram binding. Their consent is the sign-in they
+complete themselves, and the callback proves it is the `/login` sender's own
+account (AIS binding or their own Telegram `initData`). The
 token is sensitive in both processes, the bot and the login host. Rotating it
 in @BotFather invalidates both at once, so a rotation must update the bot, the
 login host and Identity together.
