@@ -272,16 +272,24 @@ async fn handle_message(
         return Ok(());
     }
 
-    // The first /start already sent the Home panel via ensure_panel. Editing
-    // the just-sent identical screen adds a needless Telegram API request and
-    // can race with the new panel before the user interacts.
-    if is_first_panel && action == PublicAction::EnterTextClient {
-        return Ok(());
-    }
-
     match action {
         PublicAction::EnterTextClient => {
-            edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
+            // Enter through Core rather than treating a local panel as proof
+            // of an active product session. Preserve the offline home view
+            // when no gateway has been configured.
+            if login.is_some() {
+                update_login(
+                    &bot,
+                    &mut store,
+                    message.chat.id,
+                    sender.id.0,
+                    message.id.0,
+                    login.as_ref(),
+                )
+                .await?;
+            } else if !is_first_panel {
+                edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
+            }
         }
         PublicAction::OpenMiniApp => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::MiniApp, None).await?;
