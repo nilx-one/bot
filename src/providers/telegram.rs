@@ -46,6 +46,9 @@ fn markup(view: &View, revision: u64) -> InlineKeyboardMarkup {
                     format!("ui:{revision}:{}", target.key()),
                 ),
                 Button::OpenUrl(label, url) => InlineKeyboardButton::url(*label, url.clone()),
+                Button::OpenLoginPage(label, url) => {
+                    InlineKeyboardButton::web_app(*label, WebAppInfo { url: url.clone() })
+                }
                 Button::OpenMiniApp => InlineKeyboardButton::web_app(
                     "Відкрити Mini App",
                     WebAppInfo {
@@ -491,7 +494,11 @@ mod tests {
         for screen in [Screen::Login, Screen::ConfirmLogin] {
             let (_, keyboard) = render_panel(&panel, screen, Some(&url), 3);
             let json = serde_json::to_string(&keyboard).unwrap();
-            assert!(json.contains("auth.aiaiaiai.org"), "{screen:?}");
+            // A Mini App button, so Telegram signs the sender for the page.
+            assert!(
+                json.contains(r#""web_app":{"url":"https://auth.aiaiaiai.org/0x1?state=s"}"#),
+                "{screen:?}: {json}"
+            );
             assert!(json.contains("ui:3:confirm_login"), "{screen:?}");
         }
         let (_, keyboard) = render_panel(&panel, Screen::Login, None, 3);

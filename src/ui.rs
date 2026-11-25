@@ -81,6 +81,9 @@ impl Screen {
 pub enum Button {
     Navigate(&'static str, Screen),
     OpenUrl(&'static str, Url),
+    /// The AIS sign-in page, opened inside Telegram as a Mini App so the
+    /// page carries Telegram's proof of the sender. Not the game Mini App.
+    OpenLoginPage(&'static str, Url),
     OpenMiniApp,
 }
 
@@ -202,7 +205,7 @@ impl Panel {
             Screen::Login => (
                 "0x1 · AIS",
                 if login_url.is_some() {
-                    "Відкрийте AIS для входу. Це лише початок авторизації; до підтвердження Core сесія неактивна."
+                    "Натисніть «Увійти»: вхід через AIS відкриється всередині Telegram і сам закриється. Потім натисніть «Підтвердити вхід»."
                 } else {
                     "AIS-авторизація недоступна або потребує нового посилання. Натисніть «Отримати посилання»."
                 },
@@ -252,7 +255,7 @@ impl Panel {
         let mut rows = Vec::new();
         if matches!(screen, Screen::Login | Screen::ConfirmLogin) {
             if let Some(url) = login_url {
-                rows.push(vec![Button::OpenUrl("Увійти через AIS", url.clone())]);
+                rows.push(vec![Button::OpenLoginPage("Увійти", url.clone())]);
                 rows.push(vec![Button::Navigate(
                     "Підтвердити вхід",
                     Screen::ConfirmLogin,
