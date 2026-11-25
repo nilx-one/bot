@@ -52,7 +52,7 @@ jobs:
           grep -F 'TELEGRAM_BOT_TOKEN is required' telegram-bot-check.log
       - name: Attest the verified Telegram bot package
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v3
         with:
           subject-path: target/x86_64-unknown-linux-musl/release/nilx-one-bot
       - name: Preserve verified Telegram bot package
