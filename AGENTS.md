@@ -12,13 +12,13 @@
 - Never claim BondChain completion from a delivered message, bot acknowledgement, AI output, or client presentation.
 - Reject forwarded, anonymous/group, bot and unverified updates from product command execution. Unknown/disabled commands return text and never fabricate success.
 - Until the Gateway/identity/session contracts are verified, commands requiring Core are unavailable, **not rerouted to another client**.
-- No production polling, token reuse, session migration or deploy without explicit cutover approval. Exactly one polling owner per production Telegram bot token.
+- No production polling cutover, token reuse or session migration without explicit approval. Exactly one polling owner per production Telegram bot token.
 
 ## GitHub delivery
 
 - Never commit directly to the default branch. Start from its latest state. One task per branch/PR; dependent stages stay separated.
-- Full CI: format, Clippy, tests and code contracts on exact head. Validate for Deploy only when a deployable artifact is ready; do not deploy in CI.
-- Merge and deploy require separate explicit authorization. No duplicate work or unverifiable completion claims.
+- Full CI: format, Clippy, tests and code contracts on exact head. Full CI itself never deploys.
+- Owner decision (2026-11-25): a green Full CI on master deploys automatically to edge-dev-1 (`Deploy edge-dev-1`). Merging to master is therefore a deploy of the bot and of Core's latest green login host, so merge only what is ready to run. No duplicate work or unverifiable completion claims.
 - Commit author and coauthor trailers describe actual contributors; never fabricate identities, tools or joint authorship.
 - Authored source/config files use the repository-specific copyright header and MPL-2.0 SPDX identifier; preserve third-party notices.
 
