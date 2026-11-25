@@ -15,9 +15,6 @@ use std::{
 /// `nilxone_api::bot_login::SIGNATURE_HEADER`.
 const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
 const START_PATH: &str = "/api/v1/telegram/login/start";
-/// `nilxone_api::bot_login::APP_PATH`: the login page the bot opens as a
-/// Mini App button. Not the game's Mini App.
-const APP_PATH: &str = "/api/v1/telegram/login/app";
 /// `nilxone_api::bot_login::CONFIRM_PATH`, on the same product host.
 const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
 
@@ -236,19 +233,7 @@ impl LoginGateway {
         if !valid_ais_authorization_url(&url, &self.registered_callback) {
             return Err(LoginError::InvalidResponse);
         }
-        // The player never gets the AIS link itself: the login page proves
-        // the sender inside Telegram first and then opens AIS in the same
-        // browser, so a forwarded link cannot finish this login.
-        Ok(self.login_page_url(message_id))
-    }
-
-    /// The login page for one `/login` message, on the login host.
-    fn login_page_url(&self, message_id: i32) -> Url {
-        let mut url = self.start_url.clone();
-        url.set_path(APP_PATH);
-        url.query_pairs_mut()
-            .append_pair("m", &message_id.to_string());
-        url
+        Ok(url)
     }
 
     /// Forward a confirm press from the verified original sender. The
@@ -542,20 +527,6 @@ mod tests {
                 r#"{"profile_id":"p","pub_dress":null,"active":true,"token":"t"}"#
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn the_player_gets_the_login_page_not_the_ais_link() {
-        let gateway = LoginGateway::new(
-            "https://nilx.one/api/v1/telegram/login/start",
-            "123456:test-bot-token",
-            CALLBACK.into(),
-        )
-        .unwrap();
-        assert_eq!(
-            gateway.login_page_url(345).as_str(),
-            "https://nilx.one/api/v1/telegram/login/app?m=345"
         );
     }
 }

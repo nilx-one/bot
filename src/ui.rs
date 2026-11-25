@@ -81,7 +81,8 @@ impl Screen {
 pub enum Button {
     Navigate(&'static str, Screen),
     OpenUrl(&'static str, Url),
-    /// The login page, opened inside Telegram so it can prove the sender.
+    /// The AIS sign-in page, opened inside Telegram as a Mini App so the
+    /// page carries Telegram's proof of the sender. Not the game Mini App.
     OpenLoginPage(&'static str, Url),
     OpenMiniApp,
 }
