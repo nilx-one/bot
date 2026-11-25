@@ -117,6 +117,11 @@ pub struct Panel {
     /// not authority: Core decides again on every request.
     #[serde(skip)]
     pub chat_session: Option<ChatSession>,
+    /// A typed command asks for the panel under it: the old one may be far
+    /// up, or gone from the owner's view after "clear history for me", where
+    /// editing still succeeds but nobody sees it.
+    #[serde(skip)]
+    pub resend: bool,
 }
 
 impl Panel {
@@ -131,6 +136,7 @@ impl Panel {
             login_url: None,
             login_message_id: None,
             chat_session: None,
+            resend: false,
         }
     }
 

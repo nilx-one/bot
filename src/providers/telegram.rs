@@ -129,14 +129,20 @@ async fn edit_panel(
     };
     let revision = panel.revision.saturating_add(1);
     let (view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
-    let edited = bot
-        .edit_message_text(chat_id, MessageId(panel.message_id), view.text.clone())
-        .reply_markup(keyboard.clone())
-        .await;
+    let old_message = MessageId(panel.message_id);
+    let resend = panel.resend;
+    let edited = if resend {
+        Err(RequestError::Api(ApiError::MessageToEditNotFound))
+    } else {
+        bot.edit_message_text(chat_id, old_message, view.text.clone())
+            .reply_markup(keyboard.clone())
+            .await
+            .map(|_| ())
+    };
     match edited {
-        Ok(_) | Err(RequestError::Api(ApiError::MessageNotModified)) => {}
-        // The panel is gone (deleted, chat cleared) or can no longer be
-        // edited. Without a new one every command would fail silently.
+        Ok(()) | Err(RequestError::Api(ApiError::MessageNotModified)) => {}
+        // A typed command, or a panel that is gone (deleted) or can no
+        // longer be edited: send a new one under the latest message.
         Err(RequestError::Api(
             ApiError::MessageToEditNotFound
             | ApiError::MessageCantBeEdited
@@ -148,6 +154,12 @@ async fn edit_panel(
                 .await?;
             if let Some(panel) = store.panels.get_mut(&chat_id.0) {
                 panel.message_id = sent.id.0;
+                panel.resend = false;
+            }
+            // Best effort: an old panel left behind keeps stale buttons,
+            // which the revision check already ignores.
+            if resend && let Err(error) = bot.delete_message(chat_id, old_message).await {
+                tracing::debug!(%error, "cannot delete the previous Telegram panel");
             }
         }
         Err(error) => return Err(error),
@@ -405,6 +417,10 @@ async fn handle_message(
     // can race with the new panel before the user interacts.
     if is_first_panel && action == PublicAction::EnterTextClient {
         return Ok(());
+    }
+    // Answer a typed command under it, not in a panel far up or hidden.
+    if !is_first_panel && let Some(panel) = store.panels.get_mut(&message.chat.id.0) {
+        panel.resend = true;
     }
 
     match action {
@@ -852,19 +868,46 @@ mod transport_integration_tests {
     }
 
     #[tokio::test]
-    async fn a_deleted_panel_is_sent_again_instead_of_going_silent() {
-        let (bot, server) = telegram_api_with(vec!["editMessageText", "sendMessage"], true);
+    async fn a_typed_command_answers_under_it_and_removes_the_old_panel() {
+        // After "clear history for me" the old panel still exists for the
+        // bot: editing it succeeds and the owner sees nothing.
+        let (bot, server) = telegram_api(vec!["sendMessage", "deleteMessage"]);
         let (state, path) = temp_ui();
         state.lock().await.panels.insert(42, Panel::new(42, 10));
         handle_message(bot, incoming(11, "/help"), state.clone(), None)
             .await
             .unwrap();
         let requests = server.join().unwrap();
-        assert_eq!(requests[0].1["message_id"], 10);
-        assert_eq!(requests[1].0, "sendMessage");
+        assert_eq!(requests[0].0, "sendMessage");
+        assert!(requests[0].1["text"].as_str().unwrap().contains("Допомога"));
+        assert_eq!(requests[1].0, "deleteMessage");
+        assert_eq!(requests[1].1["message_id"], 10);
         let store = state.lock().await;
         let panel = store.panels.get(&42).unwrap();
         assert_eq!(panel.message_id, 100, "later edits target the new panel");
+        assert_eq!(panel.screen, Screen::Help);
+        assert!(!panel.resend);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_button_on_a_deleted_panel_sends_it_again_instead_of_going_silent() {
+        let (bot, server) = telegram_api_with(
+            vec!["answerCallbackQuery", "editMessageText", "sendMessage"],
+            true,
+        );
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 10));
+        handle_callback(bot, callback(10, "ui:0:help"), state.clone(), None)
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].1["message_id"], 10);
+        assert_eq!(requests[2].0, "sendMessage");
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.message_id, 100);
         assert_eq!(panel.screen, Screen::Help);
         drop(store);
         let _ = std::fs::remove_file(path);
@@ -906,9 +949,12 @@ mod transport_integration_tests {
     async fn real_message_handler_reuses_one_panel_and_never_fakes_core_data() {
         let (bot, server) = telegram_api(vec![
             "sendMessage",
-            "editMessageText",
-            "editMessageText",
-            "editMessageText",
+            "sendMessage",
+            "deleteMessage",
+            "sendMessage",
+            "deleteMessage",
+            "sendMessage",
+            "deleteMessage",
         ]);
         let (state, path) = temp_ui();
         for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/inventory")] {
@@ -922,12 +968,21 @@ mod transport_integration_tests {
             .unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 4);
-        assert_eq!(requests[0].0, "sendMessage");
-        for (method, body) in requests.iter().skip(1) {
-            assert_eq!(method, "editMessageText");
+        assert_eq!(requests.len(), 7);
+        // One panel at a time: each typed command sends it under the command
+        // and deletes the previous one.
+        let panels: Vec<_> = requests
+            .iter()
+            .filter(|(method, _)| method == "sendMessage")
+            .collect();
+        for (method, _) in requests.iter().skip(1).step_by(2) {
+            assert_eq!(method, "sendMessage");
+        }
+        for (method, body) in requests.iter().skip(2).step_by(2) {
+            assert_eq!(method, "deleteMessage");
             assert_eq!(body["message_id"], 100);
         }
+        let requests: Vec<_> = panels.into_iter().cloned().collect();
         assert!(
             requests[1].1["text"]
                 .as_str()
