@@ -18,7 +18,7 @@
 
 - Never commit directly to the default branch. Start from its latest state. One task per branch/PR; dependent stages stay separated.
 - Full CI: format, Clippy, tests and code contracts on exact head. Full CI itself never deploys.
-- Owner decision (2026-11-25): a green Full CI on master deploys automatically to edge-dev-1 (`Deploy edge-dev-1`). Merging to master is therefore a deploy of the bot and of Core's latest green login host, so merge only what is ready to run. No duplicate work or unverifiable completion claims.
+- Owner decision (2026-11-25): every green master build is delivered to edge-dev-1 automatically. Full CI attests the bot binary it verified, and aiaiaiai-org/infra (`Deliver Telegram runtime`) deploys it with the SSH credentials that only Infra holds. This repository holds no Infra credential. Merging to master therefore deploys, so merge only what is ready to run. No duplicate work or unverifiable completion claims.
 - Commit author and coauthor trailers describe actual contributors; never fabricate identities, tools or joint authorship.
 - Authored source/config files use the repository-specific copyright header and MPL-2.0 SPDX identifier; preserve third-party notices.
 
