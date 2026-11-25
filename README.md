@@ -191,7 +191,20 @@ that no other process polls for this bot.
 
 ## Verification
 
-Full CI runs Rust format, Clippy and tests. A later deployable package requires distinct Validate for Deploy checks. Neither pipeline may deploy by itself.
+Full CI runs Rust format, Clippy and tests, and keeps the static bot binary as an artifact.
+
+## Automatic deploy
+
+After a green Full CI on `master`, **Deploy edge-dev-1** ships that bot binary together with the Core login host from Core's latest green `master` build:
+- It stages both under the runtime root on `edge-dev-1`, checked against `SHA256SUMS`.
+- `deploy/edge-dev-1/upgrade.sh` replaces the running login host, then the bot. Each new container keeps the old one's network, volumes, base image and environment, so the bot token stays on the host.
+- The login host must answer its callback, and the bot must stay up without restarts. Otherwise the previous container is restored.
+- The old bot stops before the new one polls, so `@nilxone_bot` keeps a single poller.
+- Run the workflow by hand to redeploy after a Core-only change.
+
+The first activation of the runtime stays with Infra (`deploy/telegram-runtime/activate.sh`). The workflow needs a GitHub Environment `edge-dev-1` in this repository with the same SSH values Infra uses:
+- secrets `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`;
+- variables `SSH_HOST_ED25519_PUBKEY` and, optionally, `SSH_PORT`.
 
 Licensed MPL-2.0. See LICENSE and NOTICE.
 
