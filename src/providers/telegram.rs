@@ -5,9 +5,15 @@
 //! only a trusted Core callback can later complete authentication and
 //! publish the new pinned dashboard. Telegram messages are never Core truth.
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use teloxide::{
+    ApiError, RequestError,
     dispatching::UpdateFilterExt,
     dptree,
     prelude::*,
@@ -19,11 +25,17 @@ use tokio::sync::Mutex;
 
 use crate::{
     application::{PublicAction, classify_message},
-    login::{LoginError, LoginGateway},
+    login::{ChatSession, LoginError, LoginGateway},
     ui::{Button, Panel, Screen, UiStore, View},
 };
 
 const MINI_APP_URL: &str = "https://nilx.one/telegram/";
+/// How often the bot asks Core whether the browser step of a `/login` is
+/// done. Core allows 40 asks a minute per sender.
+const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(2_500);
+/// Core keeps a login five minutes before the browser step and a verified
+/// callback five more; after that the answer can only be a failure.
+const LOGIN_WAIT: Duration = Duration::from_secs(600);
 
 type SharedUi = Arc<Mutex<UiStore>>;
 
@@ -46,6 +58,9 @@ fn markup(view: &View, revision: u64) -> InlineKeyboardMarkup {
                     format!("ui:{revision}:{}", target.key()),
                 ),
                 Button::OpenUrl(label, url) => InlineKeyboardButton::url(*label, url.clone()),
+                Button::OpenLoginPage(label, url) => {
+                    InlineKeyboardButton::web_app(*label, WebAppInfo { url: url.clone() })
+                }
                 Button::OpenMiniApp => InlineKeyboardButton::web_app(
                     "Відкрити Mini App",
                     WebAppInfo {
@@ -114,9 +129,41 @@ async fn edit_panel(
     };
     let revision = panel.revision.saturating_add(1);
     let (view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
-    bot.edit_message_text(chat_id, MessageId(panel.message_id), view.text)
-        .reply_markup(keyboard)
-        .await?;
+    let old_message = MessageId(panel.message_id);
+    let resend = panel.resend;
+    let edited = if resend {
+        Err(RequestError::Api(ApiError::MessageToEditNotFound))
+    } else {
+        bot.edit_message_text(chat_id, old_message, view.text.clone())
+            .reply_markup(keyboard.clone())
+            .await
+            .map(|_| ())
+    };
+    match edited {
+        Ok(()) | Err(RequestError::Api(ApiError::MessageNotModified)) => {}
+        // A typed command, or a panel that is gone (deleted) or can no
+        // longer be edited: send a new one under the latest message.
+        Err(RequestError::Api(
+            ApiError::MessageToEditNotFound
+            | ApiError::MessageCantBeEdited
+            | ApiError::MessageIdInvalid,
+        )) => {
+            let sent = bot
+                .send_message(chat_id, view.text)
+                .reply_markup(keyboard)
+                .await?;
+            if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+                panel.message_id = sent.id.0;
+                panel.resend = false;
+            }
+            // Best effort: an old panel left behind keeps stale buttons,
+            // which the revision check already ignores.
+            if resend && let Err(error) = bot.delete_message(chat_id, old_message).await {
+                tracing::debug!(%error, "cannot delete the previous Telegram panel");
+            }
+        }
+        Err(error) => return Err(error),
+    }
     if let Some(panel) = store.panels.get_mut(&chat_id.0) {
         panel.change_screen(screen, login_url);
     }
@@ -126,6 +173,7 @@ async fn edit_panel(
 
 async fn update_login(
     bot: &Bot,
+    state: &SharedUi,
     store: &mut UiStore,
     chat_id: ChatId,
     sender_id: u64,
@@ -149,7 +197,93 @@ async fn update_login(
     if let Some(panel) = store.panels.get_mut(&chat_id.0) {
         panel.login_message_id = started.then_some(update_message_id);
     }
+    persist(store);
+    if started && let Some(gateway) = login {
+        tokio::spawn(await_login(
+            bot.clone(),
+            Arc::clone(state),
+            gateway.clone(),
+            chat_id,
+            sender_id,
+            update_message_id,
+        ));
+    }
     Ok(())
+}
+
+/// Whether `login_message_id` is still this chat's pending `/login`. A newer
+/// `/login`, a legacy confirm press or a finished login ends the wait.
+fn awaits(store: &UiStore, chat_id: ChatId, login_message_id: i32) -> bool {
+    store
+        .panels
+        .get(&chat_id.0)
+        .is_some_and(|panel| panel.login_message_id == Some(login_message_id))
+}
+
+enum Claim {
+    /// Ask again: the browser step is unfinished or Core was briefly away.
+    Waiting,
+    /// The login is over: signed in, or failed or expired (`None`).
+    Done(Option<ChatSession>),
+}
+
+fn after_claim(outcome: Result<ChatSession, LoginError>, expired: bool) -> Claim {
+    match outcome {
+        Ok(session) => Claim::Done(Some(session)),
+        Err(LoginError::NotConfirmable | LoginError::Unavailable) if !expired => Claim::Waiting,
+        Err(error) => {
+            tracing::info!(?error, "Telegram login did not complete");
+            Claim::Done(None)
+        }
+    }
+}
+
+/// After `/login`, claim the verified browser step as soon as Core has it,
+/// so the chat shows the result without a press. Core already proved at the
+/// callback that the AIS identity belongs to this sender. A failure or the
+/// end of the wait shows that the login did not happen.
+async fn await_login(
+    bot: Bot,
+    state: SharedUi,
+    gateway: LoginGateway,
+    chat_id: ChatId,
+    sender_id: u64,
+    login_message_id: i32,
+) {
+    let deadline = Instant::now() + LOGIN_WAIT;
+    loop {
+        tokio::time::sleep(LOGIN_POLL_INTERVAL).await;
+        if !awaits(&*state.lock().await, chat_id, login_message_id) {
+            return;
+        }
+        let outcome = gateway
+            .confirm(sender_id, chat_id.0, login_message_id)
+            .await;
+        let Claim::Done(session) = after_claim(outcome, Instant::now() >= deadline) else {
+            continue;
+        };
+        let mut store = state.lock().await;
+        if !awaits(&store, chat_id, login_message_id) {
+            return;
+        }
+        let signed_in = session.is_some();
+        if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+            panel.login_message_id = None;
+            if session.is_some() {
+                panel.chat_session = session;
+            }
+        }
+        let screen = if signed_in {
+            Screen::SignedIn
+        } else {
+            Screen::LoginFailed
+        };
+        if let Err(error) = edit_panel(&bot, &mut store, chat_id, screen, None).await {
+            tracing::warn!(%error, "cannot show the Telegram login result");
+            persist(&store);
+        }
+        return;
+    }
 }
 
 /// The owner pressed confirm on the current panel. Core decides whether the
@@ -189,6 +323,12 @@ async fn confirm_login(
         Err(LoginError::NotConfirmable) => {
             // Keep the same link: the browser step may still be unfinished.
             edit_panel(bot, store, chat_id, Screen::ConfirmLogin, Some(url)).await
+        }
+        Err(LoginError::Failed) => {
+            if let Some(panel) = store.panels.get_mut(&chat_id.0) {
+                panel.login_message_id = None;
+            }
+            edit_panel(bot, store, chat_id, Screen::LoginFailed, None).await
         }
         Err(error) => {
             tracing::warn!(?error, "Telegram login confirmation unavailable");
@@ -272,24 +412,19 @@ async fn handle_message(
         return Ok(());
     }
 
+    // With no gateway, the first /start already sent the offline Home panel.
+    // A configured gateway must instead start the same login as /login.
+    if is_first_panel && action == PublicAction::EnterTextClient && login.is_none() {
+        return Ok(());
+    }
+    // Answer a typed command under it, not in a panel far up or hidden.
+    if !is_first_panel && let Some(panel) = store.panels.get_mut(&message.chat.id.0) {
+        panel.resend = true;
+    }
+
     match action {
-        PublicAction::EnterTextClient => {
-            // Enter through Core rather than treating a local panel as proof
-            // of an active product session. Preserve the offline home view
-            // when no gateway has been configured.
-            if login.is_some() {
-                update_login(
-                    &bot,
-                    &mut store,
-                    message.chat.id,
-                    sender.id.0,
-                    message.id.0,
-                    login.as_ref(),
-                )
-                .await?;
-            } else if !is_first_panel {
-                edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
-            }
+        PublicAction::EnterTextClient if login.is_none() => {
+            edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
         }
         PublicAction::OpenMiniApp => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::MiniApp, None).await?;
@@ -297,9 +432,10 @@ async fn handle_message(
         PublicAction::Help => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::Help, None).await?;
         }
-        PublicAction::StartLogin => {
+        PublicAction::EnterTextClient | PublicAction::StartLogin => {
             update_login(
                 &bot,
+                &state,
                 &mut store,
                 message.chat.id,
                 sender.id.0,
@@ -352,6 +488,7 @@ async fn handle_callback(
         Some(Screen::Login) => {
             update_login(
                 &bot,
+                &state,
                 &mut store,
                 chat,
                 query.from.id.0,
@@ -493,15 +630,65 @@ mod tests {
     }
 
     #[test]
-    fn login_link_comes_with_a_confirm_button_and_the_session_is_core_projection() {
+    fn the_wait_ends_on_a_session_a_failure_or_expiry_only() {
+        let session = ChatSession {
+            profile_id: "p".into(),
+            pub_dress: None,
+            active: true,
+        };
+        assert!(matches!(
+            after_claim(Ok(session.clone()), true),
+            Claim::Done(Some(found)) if found == session
+        ));
+        for waiting in [LoginError::NotConfirmable, LoginError::Unavailable] {
+            assert!(matches!(after_claim(Err(waiting), false), Claim::Waiting));
+            assert!(matches!(after_claim(Err(waiting), true), Claim::Done(None)));
+        }
+        for over in [LoginError::Failed, LoginError::InvalidResponse] {
+            assert!(matches!(after_claim(Err(over), false), Claim::Done(None)));
+        }
+    }
+
+    #[test]
+    fn only_the_latest_login_message_is_awaited() {
+        let mut store = UiStore::open(
+            std::env::temp_dir().join(format!("nilx-bot-awaits-{}.json", std::process::id())),
+        )
+        .unwrap();
+        let chat = ChatId(42);
+        assert!(!awaits(&store, chat, 7));
+        let mut panel = Panel::new(42, 10);
+        panel.login_message_id = Some(7);
+        store.panels.insert(42, panel);
+        assert!(awaits(&store, chat, 7));
+        assert!(!awaits(&store, chat, 6), "a newer /login replaced it");
+        assert!(!awaits(&store, ChatId(43), 7));
+        store.panels.get_mut(&42).unwrap().login_message_id = None;
+        assert!(!awaits(&store, chat, 7), "the login is over");
+    }
+
+    #[test]
+    fn login_link_needs_no_confirm_button_and_the_session_is_core_projection() {
         let mut panel = Panel::new(8, 10);
         let url = url::Url::parse("https://auth.aiaiaiai.org/0x1?state=s").unwrap();
         for screen in [Screen::Login, Screen::ConfirmLogin] {
             let (_, keyboard) = render_panel(&panel, screen, Some(&url), 3);
             let json = serde_json::to_string(&keyboard).unwrap();
-            assert!(json.contains("auth.aiaiaiai.org"), "{screen:?}");
-            assert!(json.contains("ui:3:confirm_login"), "{screen:?}");
+            // A Mini App button, so Telegram signs the sender for the page.
+            assert!(
+                json.contains(r#""web_app":{"url":"https://auth.aiaiaiai.org/0x1?state=s"}"#),
+                "{screen:?}: {json}"
+            );
+            // The bot claims the login by itself: nothing to press.
+            assert!(!json.contains("confirm_login"), "{screen:?}");
         }
+        let (view, keyboard) = render_panel(&panel, Screen::LoginFailed, None, 3);
+        assert!(view.text.contains("Вхід не вдався"), "{}", view.text);
+        assert!(
+            serde_json::to_string(&keyboard)
+                .unwrap()
+                .contains("ui:3:login")
+        );
         let (_, keyboard) = render_panel(&panel, Screen::Login, None, 3);
         assert!(
             !serde_json::to_string(&keyboard)
@@ -540,6 +727,23 @@ mod transport_integration_tests {
     fn telegram_api(
         expected: Vec<&'static str>,
     ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
+        telegram_api_with(expected, false)
+    }
+
+    /// `gone_panel`: every editMessageText fails as Telegram does once the
+    /// panel message was deleted.
+    fn telegram_api_with(
+        expected: Vec<&'static str>,
+        gone_panel: bool,
+    ) -> (Bot, thread::JoinHandle<Vec<(String, Value)>>) {
+        let (bot, _, handle) = telegram_and_core_api(expected, gone_panel);
+        (bot, handle)
+    }
+
+    fn telegram_and_core_api(
+        expected: Vec<&'static str>,
+        gone_panel: bool,
+    ) -> (Bot, url::Url, thread::JoinHandle<Vec<(String, Value)>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let bot = Bot::new("123:TEST")
@@ -588,6 +792,61 @@ mod transport_integration_tests {
                     serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
+                if matches!(method, "start" | "confirm") {
+                    assert!(
+                        headers
+                            .to_ascii_lowercase()
+                            .contains("x-0x1-telegram-bot-signature:")
+                    );
+                    assert_eq!(request_path, format!("/api/v1/telegram/login/{method}"));
+                    let response = if method == "start" {
+                        let mut url = url::Url::parse("https://auth.aiaiaiai.org/0x1").unwrap();
+                        url.query_pairs_mut()
+                            .append_pair("response_type", "code")
+                            .append_pair("client_id", "0x1")
+                            .append_pair(
+                                "redirect_uri",
+                                "https://nilx.one/api/v1/telegram/login/callback",
+                            )
+                            .append_pair("scope", "openid pub_dress telegram_binding")
+                            .append_pair("state", "unpredictable-random-state")
+                            .append_pair("nonce", "unpredictable-random-nonce")
+                            .append_pair(
+                                "code_challenge",
+                                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN_12",
+                            )
+                            .append_pair("code_challenge_method", "S256");
+                        json!({"authorization_url": url.as_str(), "expires_in_seconds": 300})
+                    } else {
+                        json!({"profile_id": "p", "pub_dress": "0x0sky", "active": false})
+                    }
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        response.len(),
+                        response
+                    )
+                    .unwrap();
+                    continue;
+                }
+
+                if gone_panel && method == "editMessageText" {
+                    let response = json!({
+                        "ok": false,
+                        "error_code": 400,
+                        "description": "Bad Request: message to edit not found"
+                    })
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        response.len(),
+                        response
+                    )
+                    .unwrap();
+                    continue;
+                }
                 let result = if method == "sendMessage" || method == "editMessageText" {
                     json!({
                         "message_id": 100,
@@ -609,7 +868,11 @@ mod transport_integration_tests {
             }
             requests
         });
-        (bot, handle)
+        let start_url = url::Url::parse(&format!(
+            "http://{address}/api/v1/telegram/login/start"
+        ))
+        .unwrap();
+        (bot, start_url, handle)
     }
 
     fn incoming(message_id: i32, text: &str) -> Message {
@@ -655,6 +918,133 @@ mod transport_integration_tests {
     }
 
     #[tokio::test]
+    async fn start_opens_ais_and_claims_without_a_press_on_new_and_existing_panels() {
+        for existing in [false, true] {
+            let expected = if existing {
+                vec![
+                    "start",
+                    "sendMessage",
+                    "deleteMessage",
+                    "confirm",
+                    "editMessageText",
+                ]
+            } else {
+                vec![
+                    "sendMessage",
+                    "start",
+                    "editMessageText",
+                    "confirm",
+                    "editMessageText",
+                ]
+            };
+            let (bot, start_url, server) = telegram_and_core_api(expected, false);
+            let gateway = LoginGateway::for_test(start_url);
+            let (state, path) = temp_ui();
+            if existing {
+                state.lock().await.panels.insert(42, Panel::new(42, 10));
+            }
+
+            handle_message(bot, incoming(11, "/start"), state.clone(), Some(gateway))
+                .await
+                .unwrap();
+            {
+                let store = state.lock().await;
+                let panel = store.panels.get(&42).unwrap();
+                assert_eq!(panel.screen, Screen::Login);
+                assert_eq!(panel.login_message_id, Some(11));
+                assert!(panel.chat_session.is_none());
+            }
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    if state.lock().await.panels.get(&42).unwrap().screen == Screen::SignedIn {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the bot must claim the Core result without a button press");
+
+            let requests = server.join().unwrap();
+            for (method, body) in &requests {
+                if matches!(method.as_str(), "start" | "confirm") {
+                    assert_eq!(body["provider_actor_id"], 42);
+                    assert_eq!(body["chat_id"], 42);
+                    assert_eq!(body["message_id"], 11);
+                }
+            }
+            let login_panel = &requests[if existing { 1 } else { 2 }].1;
+            let keyboard = login_panel["reply_markup"].to_string();
+            assert!(keyboard.contains("web_app"));
+            assert!(keyboard.contains("https://auth.aiaiaiai.org/0x1?"));
+            assert!(!keyboard.contains("confirm_login"));
+            if existing {
+                assert_eq!(requests[2].1["message_id"], 10);
+            }
+            let result = &requests.last().unwrap().1;
+            assert_eq!(result["message_id"], 100);
+            assert!(
+                result["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Активний інший твій клієнт")
+            );
+            let store = state.lock().await;
+            let panel = store.panels.get(&42).unwrap();
+            assert!(panel.login_message_id.is_none());
+            assert!(!panel.chat_session.as_ref().unwrap().active);
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_typed_command_answers_under_it_and_removes_the_old_panel() {
+        // After "clear history for me" the old panel still exists for the
+        // bot: editing it succeeds and the owner sees nothing.
+        let (bot, server) = telegram_api(vec!["sendMessage", "deleteMessage"]);
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 10));
+        handle_message(bot, incoming(11, "/help"), state.clone(), None)
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0].0, "sendMessage");
+        assert!(requests[0].1["text"].as_str().unwrap().contains("Допомога"));
+        assert_eq!(requests[1].0, "deleteMessage");
+        assert_eq!(requests[1].1["message_id"], 10);
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.message_id, 100, "later edits target the new panel");
+        assert_eq!(panel.screen, Screen::Help);
+        assert!(!panel.resend);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_button_on_a_deleted_panel_sends_it_again_instead_of_going_silent() {
+        let (bot, server) = telegram_api_with(
+            vec!["answerCallbackQuery", "editMessageText", "sendMessage"],
+            true,
+        );
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 10));
+        handle_callback(bot, callback(10, "ui:0:help"), state.clone(), None)
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].1["message_id"], 10);
+        assert_eq!(requests[2].0, "sendMessage");
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.message_id, 100);
+        assert_eq!(panel.screen, Screen::Help);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn open_renders_native_webview_button_without_session_data() {
         let (bot, server) = telegram_api(vec!["sendMessage", "editMessageText"]);
         let (state, path) = temp_ui();
@@ -690,9 +1080,12 @@ mod transport_integration_tests {
     async fn real_message_handler_reuses_one_panel_and_never_fakes_core_data() {
         let (bot, server) = telegram_api(vec![
             "sendMessage",
-            "editMessageText",
-            "editMessageText",
-            "editMessageText",
+            "sendMessage",
+            "deleteMessage",
+            "sendMessage",
+            "deleteMessage",
+            "sendMessage",
+            "deleteMessage",
         ]);
         let (state, path) = temp_ui();
         for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/inventory")] {
@@ -706,12 +1099,21 @@ mod transport_integration_tests {
             .unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 4);
-        assert_eq!(requests[0].0, "sendMessage");
-        for (method, body) in requests.iter().skip(1) {
-            assert_eq!(method, "editMessageText");
+        assert_eq!(requests.len(), 7);
+        // One panel at a time: each typed command sends it under the command
+        // and deletes the previous one.
+        let panels: Vec<_> = requests
+            .iter()
+            .filter(|(method, _)| method == "sendMessage")
+            .collect();
+        for (method, _) in requests.iter().skip(1).step_by(2) {
+            assert_eq!(method, "sendMessage");
+        }
+        for (method, body) in requests.iter().skip(2).step_by(2) {
+            assert_eq!(method, "deleteMessage");
             assert_eq!(body["message_id"], 100);
         }
+        let requests: Vec<_> = panels.into_iter().cloned().collect();
         assert!(
             requests[1].1["text"]
                 .as_str()

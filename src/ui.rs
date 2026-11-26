@@ -31,8 +31,11 @@ pub enum Screen {
     Organizations,
     Help,
     Unavailable,
-    /// The sender pressed confirm after the browser step.
+    /// A confirm press from a panel sent before the bot claimed logins by
+    /// itself. Kept so old buttons still answer.
     ConfirmLogin,
+    /// The browser step failed or the login expired.
+    LoginFailed,
     /// Core opened this chat's own product session.
     SignedIn,
 }
@@ -53,6 +56,7 @@ impl Screen {
             Self::Help => "help",
             Self::Unavailable => "unavailable",
             Self::ConfirmLogin => "confirm_login",
+            Self::LoginFailed => "login_failed",
             Self::SignedIn => "signed_in",
         }
     }
@@ -71,6 +75,7 @@ impl Screen {
             "organizations" => Some(Self::Organizations),
             "help" => Some(Self::Help),
             "confirm_login" => Some(Self::ConfirmLogin),
+            "login_failed" => Some(Self::LoginFailed),
             "signed_in" => Some(Self::SignedIn),
             _ => None,
         }
@@ -81,6 +86,9 @@ impl Screen {
 pub enum Button {
     Navigate(&'static str, Screen),
     OpenUrl(&'static str, Url),
+    /// The AIS sign-in page, opened inside Telegram as a Mini App so the
+    /// page carries Telegram's proof of the sender. Not the game Mini App.
+    OpenLoginPage(&'static str, Url),
     OpenMiniApp,
 }
 
@@ -109,6 +117,11 @@ pub struct Panel {
     /// not authority: Core decides again on every request.
     #[serde(skip)]
     pub chat_session: Option<ChatSession>,
+    /// A typed command asks for the panel under it: the old one may be far
+    /// up, or gone from the owner's view after "clear history for me", where
+    /// editing still succeeds but nobody sees it.
+    #[serde(skip)]
+    pub resend: bool,
 }
 
 impl Panel {
@@ -123,6 +136,7 @@ impl Panel {
             login_url: None,
             login_message_id: None,
             chat_session: None,
+            resend: false,
         }
     }
 
@@ -202,7 +216,7 @@ impl Panel {
             Screen::Login => (
                 "0x1 · AIS",
                 if login_url.is_some() {
-                    "Відкрийте AIS для входу. Це лише початок авторизації; до підтвердження Core сесія неактивна."
+                    "Натисніть «Увійти»: вхід через AIS відкриється всередині Telegram і сам закриється. Щойно він завершиться, тут зʼявиться «Увійшли»."
                 } else {
                     "AIS-авторизація недоступна або потребує нового посилання. Натисніть «Отримати посилання»."
                 },
@@ -237,7 +251,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — увійти або розпочати\n/open — відкрити Mini App\n/login — повторний вхід через AIS\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — розпочати вхід\n/open — відкрити Mini App\n/login — повторити вхід\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",
@@ -245,21 +259,24 @@ impl Panel {
             ),
             Screen::ConfirmLogin => (
                 "0x1 · AIS",
-                "Вхід не підтверджено. Спершу заверши вхід у браузері, потім натисни «Підтвердити вхід». Або надішли /login ще раз.",
+                "Вхід ще не завершено. Заверши його у вікні «Увійти» — результат зʼявиться тут сам. Або надішли /login ще раз.",
+            ),
+            Screen::LoginFailed => (
+                "0x1 · AIS",
+                "Вхід не вдався або час на нього минув. Нічого не змінено — спробуй ще раз.",
             ),
             Screen::SignedIn => ("0x1 · Увійшли", signed_in.as_str()),
         };
         let mut rows = Vec::new();
         if matches!(screen, Screen::Login | Screen::ConfirmLogin) {
             if let Some(url) = login_url {
-                rows.push(vec![Button::OpenUrl("Увійти через AIS", url.clone())]);
-                rows.push(vec![Button::Navigate(
-                    "Підтвердити вхід",
-                    Screen::ConfirmLogin,
-                )]);
+                rows.push(vec![Button::OpenLoginPage("Увійти", url.clone())]);
             } else {
                 rows.push(vec![Button::Navigate("Отримати посилання", Screen::Login)]);
             }
+        }
+        if screen == Screen::LoginFailed {
+            rows.push(vec![Button::Navigate("Спробувати ще", Screen::Login)]);
         }
         if screen == Screen::MiniApp {
             rows.push(vec![Button::OpenMiniApp]);

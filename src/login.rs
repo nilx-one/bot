@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! AIS login transport: the bot requests a Core-hosted, one-use OIDC
-//! authorization transaction, then forwards the original sender's confirm
-//! press. It does not construct its own state/nonce, verify identity,
+//! authorization transaction, then claims its verified callback for the
+//! original `/login` message. It does not construct its own state/nonce, verify identity,
 //! exchange codes, hold Bond sessions or tokens, or link accounts.
 
 use ring::hmac;
@@ -42,6 +42,8 @@ pub enum LoginError {
     /// Core has no verified browser step for this sender, chat and `/login`
     /// message: unfinished, expired or already used.
     NotConfirmable,
+    /// The browser step reached Core and failed; this `/login` is over.
+    Failed,
 }
 
 /// Core's answer to a confirmation: the chat has its own product session.
@@ -159,6 +161,19 @@ impl LoginGateway {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(start_url: Url) -> Self {
+        assert_eq!(start_url.host_str(), Some("127.0.0.1"));
+        let mut gateway = Self::new(
+            "https://nilx.one/api/v1/telegram/login/start",
+            "123:TEST",
+            "https://nilx.one/api/v1/telegram/login/callback".to_owned(),
+        )
+        .unwrap();
+        gateway.start_url = start_url;
+        gateway
+    }
+
     /// `nilxone_api::bot_login::sign_request`:
     /// `t=<unix>,v1=<hex HMAC-SHA256(key, "<t>\n<path>\n<body>")>`.
     fn signature(&self, timestamp: u64, path: &str, body: &[u8]) -> String {
@@ -236,7 +251,9 @@ impl LoginGateway {
         Ok(url)
     }
 
-    /// Forward a confirm press from the verified original sender. The
+    /// Claim the verified browser step of a `/login`. The bot asks right
+    /// after login start until it is done: Core already proved at the
+    /// callback that the identity belongs to this Telegram sender. The
     /// `login_message_id` is the message login start was bound to; Core
     /// accepts it only for the same sender and private chat, once.
     pub async fn confirm(
@@ -270,11 +287,18 @@ fn parse_confirmation(status: reqwest::StatusCode, body: &[u8]) -> Result<ChatSe
         code: String,
     }
 
+    let refusal = || {
+        serde_json::from_slice::<Refusal>(body)
+            .ok()
+            .map(|refusal| refusal.error.code)
+    };
     if status == reqwest::StatusCode::NOT_FOUND
-        && serde_json::from_slice::<Refusal>(body)
-            .is_ok_and(|refusal| refusal.error.code == "login_confirmation_not_found")
+        && refusal().as_deref() == Some("login_confirmation_not_found")
     {
         return Err(LoginError::NotConfirmable);
+    }
+    if status == reqwest::StatusCode::GONE && refusal().as_deref() == Some("login_failed") {
+        return Err(LoginError::Failed);
     }
     if !status.is_success() {
         return Err(LoginError::Unavailable);
@@ -509,6 +533,17 @@ mod tests {
                 br#"{"error":{"code":"login_confirmation_not_found"}}"#
             ),
             Err(LoginError::NotConfirmable)
+        );
+        assert_eq!(
+            parse_confirmation(
+                reqwest::StatusCode::GONE,
+                br#"{"error":{"code":"login_failed"}}"#
+            ),
+            Err(LoginError::Failed)
+        );
+        assert_eq!(
+            parse_confirmation(reqwest::StatusCode::GONE, b"gone"),
+            Err(LoginError::Unavailable)
         );
         assert_eq!(
             parse_confirmation(status, b"not found"),
