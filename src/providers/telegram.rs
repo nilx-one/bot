@@ -422,9 +422,20 @@ async fn handle_message(
         panel.resend = true;
     }
 
+    // A chat that already holds a session is not asked to sign in again: its
+    // display projection only chooses the screen and authorizes nothing. A
+    // restart forgets it, so /start then asks for sign-in again.
+    let signed_in = store
+        .panels
+        .get(&message.chat.id.0)
+        .is_some_and(|panel| panel.chat_session.is_some());
+
     match action {
         PublicAction::EnterTextClient if login.is_none() => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::Home, None).await?;
+        }
+        PublicAction::EnterTextClient if signed_in => {
+            edit_panel(&bot, &mut store, message.chat.id, Screen::SignedIn, None).await?;
         }
         PublicAction::OpenMiniApp => {
             edit_panel(&bot, &mut store, message.chat.id, Screen::MiniApp, None).await?;
@@ -993,6 +1004,43 @@ mod transport_integration_tests {
             drop(store);
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn start_on_a_signed_in_chat_shows_the_session_instead_of_a_new_login() {
+        // No "start" or "confirm" request may reach Core.
+        let (bot, start_url, server) =
+            telegram_and_core_api(vec!["sendMessage", "deleteMessage"], false);
+        let gateway = LoginGateway::for_test(start_url);
+        let (state, path) = temp_ui();
+        let mut panel = Panel::new(42, 10);
+        panel.chat_session = Some(crate::login::ChatSession {
+            profile_id: "p".into(),
+            pub_dress: Some("0x0sky".into()),
+            active: true,
+        });
+        state.lock().await.panels.insert(42, panel);
+
+        handle_message(bot, incoming(11, "/start"), state.clone(), Some(gateway))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert!(
+            requests[0].1["text"]
+                .as_str()
+                .unwrap()
+                .contains("Цей чат — активний клієнт 0x1."),
+            "{requests:?}"
+        );
+        let store = state.lock().await;
+        let panel = store.panels.get(&42).unwrap();
+        assert_eq!(panel.screen, Screen::SignedIn);
+        assert!(
+            panel.login_message_id.is_none(),
+            "no login wait was started"
+        );
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
