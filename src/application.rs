@@ -16,6 +16,8 @@ pub enum PublicAction {
     /// Text-only entry to the Core-owned subscription projection.
     Subscription,
     OwnBond,
+    OwnAvaia,
+    Inventory,
     /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
@@ -37,6 +39,8 @@ pub fn classify_message(text: &str) -> PublicAction {
         "/help" => PublicAction::Help,
         "/login" => PublicAction::StartLogin,
         "/bond" => PublicAction::OwnBond,
+        "/avaia" => PublicAction::OwnAvaia,
+        "/inventory" => PublicAction::Inventory,
         "/subscription" => PublicAction::Subscription,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,
@@ -66,14 +70,7 @@ mod tests {
 
     #[test]
     fn unsupported_commands_need_authorized_core_and_text_is_not_a_command() {
-        for command in [
-            "/unlink",
-            "/travel",
-            "/set_position",
-            "/inventory",
-            "/avaia",
-            "/admin",
-        ] {
+        for command in ["/unlink", "/travel", "/set_position", "/admin"] {
             assert_eq!(classify_message(command), PublicAction::NeedsCore);
         }
         for input in ["hello", "лети на золоті", "", "   "] {

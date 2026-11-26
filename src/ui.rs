@@ -251,7 +251,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/bond — мій профіль Bond\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/bond — мій профіль Bond\n/avaia — моя Avaia\n/inventory — інвентар і Seeds\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",
