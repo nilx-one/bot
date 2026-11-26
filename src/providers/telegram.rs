@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     application::{PublicAction, classify_message},
-    login::{ChatSession, LoginError, LoginGateway},
+    login::{AvaiaProfile, ChatSession, LoginError, LoginGateway, ProfileSection, WalletProfile},
     ui::{Button, Panel, Screen, UiStore, View},
 };
 
@@ -409,38 +409,106 @@ fn callback_screen(
     panel?.callback_target(requester_id, message_id, data.unwrap_or_default())
 }
 
-async fn show_bond(
+async fn profile_text(
+    host: &LoginGateway,
+    actor: u64,
+    chat: i64,
+    section: ProfileSection,
+) -> Result<Option<String>, LoginError> {
+    match section {
+        ProfileSection::Bond => Ok(host.own_profile(actor, chat).await?.map(|profile| {
+            format!(
+                "{}\n\nДосвід за даними клієнта\nBond · {} XP\nAvaia · {} XP",
+                profile
+                    .pub_dress
+                    .as_deref()
+                    .unwrap_or("Без публічної адреси"),
+                profile.experience.bond_xp,
+                profile.experience.avaia_xp,
+            )
+        })),
+        ProfileSection::Avaia => {
+            let profile: Option<AvaiaProfile> = host.read_profile(actor, chat, section).await?;
+            Ok(profile.map(|profile| {
+                let Some(avaia) = profile.avaia else {
+                    return "Core поки не має даних про твою Avaia.".to_owned();
+                };
+                let status = if avaia.configured {
+                    "Налаштована"
+                } else {
+                    "Ще не налаштована"
+                };
+                let location = avaia.location.map_or_else(
+                    || "Ще не збережено".to_owned(),
+                    |location| {
+                        format!(
+                            "{:.5}, {:.5}",
+                            f64::from(location.latitude_e7) / 10_000_000.0,
+                            f64::from(location.longitude_e7) / 10_000_000.0
+                        )
+                    },
+                );
+                format!(
+                    "{}\n{}\nОстання збережена позиція · {}",
+                    avaia.pub_dress, status, location
+                )
+            }))
+        }
+        ProfileSection::Wallet => {
+            let profile: Option<WalletProfile> = host.read_profile(actor, chat, section).await?;
+            Ok(profile.map(|profile| {
+                let balance = profile.seeds.map_or_else(
+                    || "Гаманець Seeds недоступний для цієї сесії.".to_owned(),
+                    |seeds| format!("Гаманець · {seeds} Seeds"),
+                );
+                format!("{balance}\nКишеня та рюкзак доступні на клієнті, де збережено інвентар.")
+            }))
+        }
+    }
+}
+
+async fn show_profile(
     bot: &Bot,
     state: &SharedUi,
     chat: ChatId,
     actor: u64,
     panel_at_request: (i32, u64),
+    screen: Screen,
     login: Option<&LoginGateway>,
 ) -> ResponseResult<()> {
+    let (title, section, unavailable) = match screen {
+        Screen::Bond => (
+            "Bond",
+            ProfileSection::Bond,
+            "Не вдалося отримати профіль Bond. Спробуй /bond ще раз.",
+        ),
+        Screen::Avaia => (
+            "Avaia",
+            ProfileSection::Avaia,
+            "Дані Avaia недоступні. Спробуй /avaia ще раз.",
+        ),
+        Screen::Inventory => (
+            "Інвентар",
+            ProfileSection::Wallet,
+            "Інвентар недоступний. Спробуй /inventory ще раз.",
+        ),
+        _ => return Ok(()),
+    };
     let profile = match login {
-        Some(host) => host.own_profile(actor, chat.0).await,
+        Some(host) => profile_text(host, actor, chat.0, section).await,
         None => Err(LoginError::Unavailable),
     };
-    let text = match profile {
-        Ok(Some(profile)) => format!(
-            "0x1 · Bond\n\n{}\n\nДосвід за даними клієнта\nBond · {} XP\nAvaia · {} XP",
-            profile
-                .pub_dress
-                .as_deref()
-                .unwrap_or("Без публічної адреси"),
-            profile.experience.bond_xp,
-            profile.experience.avaia_xp,
-        ),
-        Ok(None) => "0x1 · Bond\n\nЩоб переглянути свій Bond, увійди через /login.".to_owned(),
-        Err(_) => {
-            "0x1 · Bond\n\nНе вдалося отримати профіль Bond. Спробуй /bond ще раз.".to_owned()
-        }
+    let detail = match profile {
+        Ok(Some(text)) => text,
+        Ok(None) => "Щоб переглянути дані, увійди через /login.".to_owned(),
+        Err(_) => unavailable.to_owned(),
     };
+    let text = format!("0x1 · {title}\n\n{detail}");
     let mut store = state.lock().await;
     if store.panels.get(&chat.0).is_some_and(|panel| {
         panel.owner_id == actor && (panel.message_id, panel.revision) == panel_at_request
     }) {
-        edit_panel_text(bot, &mut store, chat, Screen::Bond, None, Some(text)).await?;
+        edit_panel_text(bot, &mut store, chat, screen, None, Some(text)).await?;
     }
     Ok(())
 }
@@ -543,16 +611,22 @@ async fn handle_message(
             )
             .await?;
         }
-        PublicAction::OwnBond => {
+        PublicAction::OwnBond | PublicAction::OwnAvaia | PublicAction::Inventory => {
+            let screen = match action {
+                PublicAction::OwnAvaia => Screen::Avaia,
+                PublicAction::Inventory => Screen::Inventory,
+                _ => Screen::Bond,
+            };
             let panel = &store.panels[&message.chat.id.0];
             let panel_at_request = (panel.message_id, panel.revision);
             drop(store);
-            return show_bond(
+            return show_profile(
                 &bot,
                 &state,
                 message.chat.id,
                 sender.id.0,
                 panel_at_request,
+                screen,
                 login.as_ref(),
             )
             .await;
@@ -613,16 +687,17 @@ async fn handle_callback(
             )
             .await?;
         }
-        Some(Screen::Bond) => {
+        Some(screen @ (Screen::Bond | Screen::Avaia | Screen::Inventory)) => {
             let panel = &store.panels[&chat.0];
             let panel_at_request = (panel.message_id, panel.revision);
             drop(store);
-            return show_bond(
+            return show_profile(
                 &bot,
                 &state,
                 chat,
                 query.from.id.0,
                 panel_at_request,
+                screen,
                 login.as_ref(),
             )
             .await;
@@ -682,7 +757,7 @@ mod tests {
         );
         assert_eq!(
             private_action(true, true, false, "/inventory"),
-            Some(PublicAction::NeedsCore)
+            Some(PublicAction::Inventory)
         );
         assert_eq!(
             private_action(true, true, false, "лети на Майдан"),
@@ -693,7 +768,7 @@ mod tests {
             (true, false, false),
             (true, true, true),
         ] {
-            for command in ["/start", "/bond"] {
+            for command in ["/start", "/bond", "/avaia", "/inventory"] {
                 assert_eq!(
                     private_action(private_chat, human_sender, forwarded, command),
                     None
@@ -957,10 +1032,18 @@ mod transport_integration_tests {
                             .append_pair("code_challenge_method", "S256");
                         json!({"authorization_url": url.as_str(), "expires_in_seconds": 300})
                     } else if method == "profile" {
-                        json!({
-                            "pub_dress": "0x0sky",
-                            "experience": {"authority": "client", "bond_xp": 3, "avaia_xp": 5}
-                        })
+                        match requests.last().unwrap().1["section"].as_str() {
+                            Some("wallet") => json!({"seeds": 51}),
+                            Some("avaia") => json!({"avaia": {
+                                "pub_dress": "0x0skyai",
+                                "configured": true,
+                                "location": {"latitude_e7": 504500000, "longitude_e7": 305200000}
+                            }}),
+                            _ => json!({
+                                "pub_dress": "0x0sky",
+                                "experience": {"authority": "client", "bond_xp": 3, "avaia_xp": 5}
+                            }),
+                        }
                     } else {
                         json!({"profile_id": "p", "pub_dress": "0x0sky", "active": false})
                     }
@@ -1301,7 +1384,7 @@ mod transport_integration_tests {
             "deleteMessage",
         ]);
         let (state, path) = temp_ui();
-        for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/inventory")] {
+        for (message_id, text) in [(10, "/start"), (11, "/SUBSCRIPTION"), (12, "/travel")] {
             handle_message(bot.clone(), incoming(message_id, text), state.clone(), None)
                 .await
                 .unwrap();
@@ -1418,6 +1501,42 @@ mod transport_integration_tests {
         assert!(text.contains("0x0sky"));
         assert!(text.contains("Bond · 3 XP"));
         assert!(text.contains("Avaia · 5 XP"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn avaia_and_inventory_panels_show_the_core_state() {
+        let (bot, start_url, server) = telegram_and_core_api(
+            vec![
+                "answerCallbackQuery",
+                "profile",
+                "editMessageText",
+                "answerCallbackQuery",
+                "profile",
+                "editMessageText",
+            ],
+            false,
+        );
+        let host = LoginGateway::for_test(start_url);
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 100));
+        for target in ["ui:0:avaia", "ui:1:inventory"] {
+            handle_callback(
+                bot.clone(),
+                callback(100, target),
+                state.clone(),
+                Some(host.clone()),
+            )
+            .await
+            .unwrap();
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].1["section"], "avaia");
+        let avaia = requests[2].1["text"].as_str().unwrap();
+        assert!(avaia.contains("0x0skyai"));
+        assert!(avaia.contains("50.45000, 30.52000"));
+        assert_eq!(requests[4].1["section"], "wallet");
+        assert!(requests[5].1["text"].as_str().unwrap().contains("51 Seeds"));
         std::fs::remove_file(path).unwrap();
     }
 

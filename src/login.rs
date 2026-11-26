@@ -72,12 +72,49 @@ pub(crate) struct ProfileExperience {
     pub avaia_xp: u64,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProfileSection {
+    Bond,
+    Avaia,
+    Wallet,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AvaiaProfile {
+    pub avaia: Option<OwnedAvaia>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct OwnedAvaia {
+    pub pub_dress: String,
+    pub configured: bool,
+    pub location: Option<AvaiaLocation>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AvaiaLocation {
+    pub latitude_e7: i32,
+    pub longitude_e7: i32,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WalletProfile {
+    pub seeds: Option<u64>,
+}
+
 #[derive(Serialize)]
 struct ChatProfileRequest {
     version: u8,
     provider: &'static str,
     provider_actor_id: u64,
     chat_id: i64,
+    #[serde(skip_serializing_if = "is_bond_section")]
+    section: ProfileSection,
+}
+
+fn is_bond_section(section: &ProfileSection) -> bool {
+    matches!(section, ProfileSection::Bond)
 }
 
 #[derive(Serialize)]
@@ -241,6 +278,23 @@ impl LoginGateway {
         actor: u64,
         chat: i64,
     ) -> Result<Option<BondProfile>, LoginError> {
+        let profile: Option<BondProfile> =
+            self.read_profile(actor, chat, ProfileSection::Bond).await?;
+        if profile
+            .as_ref()
+            .is_some_and(|p| p.experience.authority != "client")
+        {
+            return Err(LoginError::InvalidResponse);
+        }
+        Ok(profile)
+    }
+
+    pub(crate) async fn read_profile<T: serde::de::DeserializeOwned>(
+        &self,
+        actor: u64,
+        chat: i64,
+        section: ProfileSection,
+    ) -> Result<Option<T>, LoginError> {
         if chat <= 0 || i64::try_from(actor).ok() != Some(chat) {
             return Err(LoginError::InvalidResponse);
         }
@@ -249,6 +303,7 @@ impl LoginGateway {
             provider: "telegram",
             provider_actor_id: actor,
             chat_id: chat,
+            section,
         };
         let mut response = self.post_signed(PROFILE_PATH, &query).await?;
         let status = response.status();
@@ -276,12 +331,9 @@ impl LoginGateway {
                 Err(LoginError::Unavailable)
             };
         }
-        let profile: BondProfile =
-            serde_json::from_slice(&bytes).map_err(|_| LoginError::InvalidResponse)?;
-        if profile.experience.authority != "client" {
-            return Err(LoginError::InvalidResponse);
-        }
-        Ok(Some(profile))
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| LoginError::InvalidResponse)
     }
 
     /// A verified Telegram update supplies these actor/message IDs. The
