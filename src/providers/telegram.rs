@@ -480,10 +480,18 @@ async fn show_profile(
         Screen::Bond => (
             "Bond",
             ProfileSection::Bond,
-            "Не вдалося отримати профіль Bond.",
+            "Не вдалося отримати профіль Bond. Спробуй /bond ще раз.",
         ),
-        Screen::Avaia => ("Avaia", ProfileSection::Avaia, "Дані Avaia недоступні."),
-        Screen::Inventory => ("Інвентар", ProfileSection::Wallet, "Інвентар недоступний."),
+        Screen::Avaia => (
+            "Avaia",
+            ProfileSection::Avaia,
+            "Дані Avaia недоступні. Спробуй /avaia ще раз.",
+        ),
+        Screen::Inventory => (
+            "Інвентар",
+            ProfileSection::Wallet,
+            "Інвентар недоступний. Спробуй /inventory ще раз.",
+        ),
         _ => return Ok(()),
     };
     let profile = match login {
