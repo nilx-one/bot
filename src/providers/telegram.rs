@@ -767,6 +767,9 @@ mod transport_integration_tests {
                     }
                 };
                 let headers = std::str::from_utf8(&bytes[..headers_end]).unwrap();
+                let signed = headers
+                    .to_ascii_lowercase()
+                    .contains("x-0x1-telegram-bot-signature:");
                 let request_path = headers.split_whitespace().nth(1).unwrap().to_owned();
                 assert!(
                     request_path
@@ -793,11 +796,7 @@ mod transport_integration_tests {
                 requests.push((method.to_owned(), body));
 
                 if matches!(method, "start" | "confirm") {
-                    assert!(
-                        headers
-                            .to_ascii_lowercase()
-                            .contains("x-0x1-telegram-bot-signature:")
-                    );
+                    assert!(signed);
                     assert_eq!(request_path, format!("/api/v1/telegram/login/{method}"));
                     let response = if method == "start" {
                         let mut url = url::Url::parse("https://auth.aiaiaiai.org/0x1").unwrap();
@@ -868,10 +867,8 @@ mod transport_integration_tests {
             }
             requests
         });
-        let start_url = url::Url::parse(&format!(
-            "http://{address}/api/v1/telegram/login/start"
-        ))
-        .unwrap();
+        let start_url =
+            url::Url::parse(&format!("http://{address}/api/v1/telegram/login/start")).unwrap();
         (bot, start_url, handle)
     }
 
