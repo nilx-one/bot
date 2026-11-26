@@ -15,6 +15,8 @@ use std::{
 /// `nilxone_api::bot_login::SIGNATURE_HEADER`.
 const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
 const START_PATH: &str = "/api/v1/telegram/login/start";
+/// `nilxone_api::bot_login::CHAT_PROFILE_PATH`.
+const PROFILE_PATH: &str = "/api/v1/telegram/profile";
 /// `nilxone_api::bot_login::CONFIRM_PATH`, on the same product host.
 const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
 
@@ -55,6 +57,27 @@ pub struct ChatSession {
     pub pub_dress: Option<String>,
     /// Single Active Client: false while the Mini App or a browser is active.
     pub active: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BondProfile {
+    pub pub_dress: Option<String>,
+    pub experience: ProfileExperience,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ProfileExperience {
+    pub authority: String,
+    pub bond_xp: u64,
+    pub avaia_xp: u64,
+}
+
+#[derive(Serialize)]
+struct ChatProfileRequest {
+    version: u8,
+    provider: &'static str,
+    provider_actor_id: u64,
+    chat_id: i64,
 }
 
 #[derive(Serialize)]
@@ -194,7 +217,7 @@ impl LoginGateway {
     async fn post_signed(
         &self,
         path: &str,
-        request: &StartRequest,
+        request: &impl Serialize,
     ) -> Result<reqwest::Response, LoginError> {
         let body = serde_json::to_vec(request).map_err(|_| LoginError::InvalidResponse)?;
         let now = SystemTime::now()
@@ -211,6 +234,54 @@ impl LoginGateway {
             .send()
             .await
             .map_err(|_| LoginError::Unavailable)
+    }
+
+    pub(crate) async fn own_profile(
+        &self,
+        actor: u64,
+        chat: i64,
+    ) -> Result<Option<BondProfile>, LoginError> {
+        if chat <= 0 || i64::try_from(actor).ok() != Some(chat) {
+            return Err(LoginError::InvalidResponse);
+        }
+        let query = ChatProfileRequest {
+            version: 1,
+            provider: "telegram",
+            provider_actor_id: actor,
+            chat_id: chat,
+        };
+        let mut response = self.post_signed(PROFILE_PATH, &query).await?;
+        let status = response.status();
+        if status != reqwest::StatusCode::UNAUTHORIZED && !status.is_success() {
+            return Err(LoginError::Unavailable);
+        }
+        const MAX_PROFILE_BYTES: usize = 4096;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| LoginError::Unavailable)?
+        {
+            if chunk.len() > MAX_PROFILE_BYTES - bytes.len() {
+                return Err(LoginError::InvalidResponse);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            let refusal: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| LoginError::InvalidResponse)?;
+            return if refusal["error"]["code"] == "provider_authentication_required" {
+                Ok(None)
+            } else {
+                Err(LoginError::Unavailable)
+            };
+        }
+        let profile: BondProfile =
+            serde_json::from_slice(&bytes).map_err(|_| LoginError::InvalidResponse)?;
+        if profile.experience.authority != "client" {
+            return Err(LoginError::InvalidResponse);
+        }
+        Ok(Some(profile))
     }
 
     /// A verified Telegram update supplies these actor/message IDs. The

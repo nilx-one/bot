@@ -128,11 +128,25 @@ async fn edit_panel(
     screen: Screen,
     login_url: Option<url::Url>,
 ) -> ResponseResult<()> {
+    edit_panel_text(bot, store, chat_id, screen, login_url, None).await
+}
+
+async fn edit_panel_text(
+    bot: &Bot,
+    store: &mut UiStore,
+    chat_id: ChatId,
+    screen: Screen,
+    login_url: Option<url::Url>,
+    text: Option<String>,
+) -> ResponseResult<()> {
     let Some(panel) = store.panels.get(&chat_id.0) else {
         return Ok(());
     };
     let revision = panel.revision.saturating_add(1);
-    let (view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
+    let (mut view, keyboard) = render_panel(panel, screen, login_url.as_ref(), revision);
+    if let Some(text) = text {
+        view.text = text;
+    }
     let old_message = MessageId(panel.message_id);
     let resend = panel.resend;
     let edited = if resend {
@@ -395,6 +409,42 @@ fn callback_screen(
     panel?.callback_target(requester_id, message_id, data.unwrap_or_default())
 }
 
+async fn show_bond(
+    bot: &Bot,
+    state: &SharedUi,
+    chat: ChatId,
+    actor: u64,
+    panel_at_request: (i32, u64),
+    login: Option<&LoginGateway>,
+) -> ResponseResult<()> {
+    let profile = match login {
+        Some(host) => host.own_profile(actor, chat.0).await,
+        None => Err(LoginError::Unavailable),
+    };
+    let text = match profile {
+        Ok(Some(profile)) => format!(
+            "0x1 · Bond\n\n{}\n\nДосвід за даними клієнта\nBond · {} XP\nAvaia · {} XP",
+            profile
+                .pub_dress
+                .as_deref()
+                .unwrap_or("Без публічної адреси"),
+            profile.experience.bond_xp,
+            profile.experience.avaia_xp,
+        ),
+        Ok(None) => "0x1 · Bond\n\nЩоб переглянути свій Bond, увійди через /login.".to_owned(),
+        Err(_) => {
+            "0x1 · Bond\n\nНе вдалося отримати профіль Bond. Спробуй /bond ще раз.".to_owned()
+        }
+    };
+    let mut store = state.lock().await;
+    if store.panels.get(&chat.0).is_some_and(|panel| {
+        panel.owner_id == actor && (panel.message_id, panel.revision) == panel_at_request
+    }) {
+        edit_panel_text(bot, &mut store, chat, Screen::Bond, None, Some(text)).await?;
+    }
+    Ok(())
+}
+
 async fn handle_message(
     bot: Bot,
     message: Message,
@@ -493,6 +543,20 @@ async fn handle_message(
             )
             .await?;
         }
+        PublicAction::OwnBond => {
+            let panel = &store.panels[&message.chat.id.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_bond(
+                &bot,
+                &state,
+                message.chat.id,
+                sender.id.0,
+                panel_at_request,
+                login.as_ref(),
+            )
+            .await;
+        }
         PublicAction::Subscription => {
             edit_panel(
                 &bot,
@@ -549,6 +613,20 @@ async fn handle_callback(
             )
             .await?;
         }
+        Some(Screen::Bond) => {
+            let panel = &store.panels[&chat.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_bond(
+                &bot,
+                &state,
+                chat,
+                query.from.id.0,
+                panel_at_request,
+                login.as_ref(),
+            )
+            .await;
+        }
         Some(Screen::ConfirmLogin) => {
             confirm_login(&bot, &mut store, chat, query.from.id.0, login.as_ref()).await?;
         }
@@ -599,6 +677,10 @@ mod tests {
             Some(PublicAction::Subscription)
         );
         assert_eq!(
+            private_action(true, true, false, "/bond"),
+            Some(PublicAction::OwnBond)
+        );
+        assert_eq!(
             private_action(true, true, false, "/inventory"),
             Some(PublicAction::NeedsCore)
         );
@@ -611,10 +693,12 @@ mod tests {
             (true, false, false),
             (true, true, true),
         ] {
-            assert_eq!(
-                private_action(private_chat, human_sender, forwarded, "/start"),
-                None
-            );
+            for command in ["/start", "/bond"] {
+                assert_eq!(
+                    private_action(private_chat, human_sender, forwarded, command),
+                    None
+                );
+            }
         }
     }
 
@@ -847,9 +931,13 @@ mod transport_integration_tests {
                     serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
-                if matches!(method, "start" | "confirm") {
+                if matches!(method, "start" | "confirm" | "profile") {
                     assert!(signed);
-                    assert_eq!(request_path, format!("/api/v1/telegram/login/{method}"));
+                    if method == "profile" {
+                        assert_eq!(request_path, "/api/v1/telegram/profile");
+                    } else {
+                        assert_eq!(request_path, format!("/api/v1/telegram/login/{method}"));
+                    }
                     let response = if method == "start" {
                         let mut url = url::Url::parse("https://auth.aiaiaiai.org/0x1").unwrap();
                         url.query_pairs_mut()
@@ -868,6 +956,11 @@ mod transport_integration_tests {
                             )
                             .append_pair("code_challenge_method", "S256");
                         json!({"authorization_url": url.as_str(), "expires_in_seconds": 300})
+                    } else if method == "profile" {
+                        json!({
+                            "pub_dress": "0x0sky",
+                            "experience": {"authority": "client", "bond_xp": 3, "avaia_xp": 5}
+                        })
                     } else {
                         json!({"profile_id": "p", "pub_dress": "0x0sky", "active": false})
                     }
@@ -1288,6 +1381,44 @@ mod transport_integration_tests {
         assert!(server.join().unwrap().is_empty());
         // The handler never saved a panel for an unauthorized source.
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn bond_panel_reads_current_profile_and_ignores_a_stale_button() {
+        let (bot, start_url, server) = telegram_and_core_api(
+            vec![
+                "answerCallbackQuery",
+                "profile",
+                "editMessageText",
+                "answerCallbackQuery",
+            ],
+            false,
+        );
+        let host = LoginGateway::for_test(start_url);
+        let (state, path) = temp_ui();
+        state.lock().await.panels.insert(42, Panel::new(42, 100));
+
+        for _ in 0..2 {
+            handle_callback(
+                bot.clone(),
+                callback(100, "ui:0:bond"),
+                state.clone(),
+                Some(host.clone()),
+            )
+            .await
+            .unwrap();
+        }
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[1].1,
+            json!({"version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42})
+        );
+        let text = requests[2].1["text"].as_str().unwrap();
+        assert!(text.contains("0x0sky"));
+        assert!(text.contains("Bond · 3 XP"));
+        assert!(text.contains("Avaia · 5 XP"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

@@ -231,7 +231,7 @@ impl Panel {
             ),
             Screen::Bond => (
                 "0x1 · Bond",
-                "Профіль Bond та XP будуть доступні тільки через Core Gateway.",
+                "Не вдалося отримати профіль Bond. Спробуй /bond ще раз.",
             ),
             Screen::Avaia => (
                 "0x1 · Avaia",
@@ -251,7 +251,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/bond — мій профіль Bond\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",

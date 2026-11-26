@@ -15,6 +15,7 @@ pub enum PublicAction {
     StartLogin,
     /// Text-only entry to the Core-owned subscription projection.
     Subscription,
+    OwnBond,
     /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
@@ -35,6 +36,7 @@ pub fn classify_message(text: &str) -> PublicAction {
         "/open" => PublicAction::OpenMiniApp,
         "/help" => PublicAction::Help,
         "/login" => PublicAction::StartLogin,
+        "/bond" => PublicAction::OwnBond,
         "/subscription" => PublicAction::Subscription,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,
@@ -53,6 +55,7 @@ mod tests {
         for command in ["/open", "/Open", "/OPEN@nilxone_bot"] {
             assert_eq!(classify_message(command), PublicAction::OpenMiniApp);
         }
+        assert_eq!(classify_message("/Bond@nilxone_bot"), PublicAction::OwnBond);
         assert_eq!(classify_message("/LOGIN"), PublicAction::StartLogin);
         assert_eq!(classify_message("/HELP"), PublicAction::Help);
         assert_eq!(
