@@ -31,8 +31,12 @@ use crate::{
 
 const MINI_APP_URL: &str = "https://nilx.one/telegram/";
 /// How often the bot asks Core whether the browser step of a `/login` is
-/// done. Core allows 40 asks a minute per sender.
+/// done. Core allows 40 asks a minute per sender. Tests ask at once against
+/// their local mock instead of waiting real seconds.
+#[cfg(not(test))]
 const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(2_500);
+#[cfg(test)]
+const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Core keeps a login five minutes before the browser step and a verified
 /// callback five more; after that the answer can only be a failure.
 const LOGIN_WAIT: Duration = Duration::from_secs(600);
@@ -171,15 +175,37 @@ async fn edit_panel(
     Ok(())
 }
 
+/// What the panel shows when the login host cannot start a login.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartFailure {
+    /// `/start` is the entry: keep the player in the text client's Home.
+    Home,
+    /// `/login` or «Увійти» asked for a link: say it is unavailable.
+    Unavailable,
+}
+
+/// The verified update that asked for a login: its sender, the message the
+/// transaction is bound to, and what to show if the host cannot start it.
+#[derive(Clone, Copy)]
+struct LoginCommand {
+    sender_id: u64,
+    message_id: i32,
+    on_failure: StartFailure,
+}
+
 async fn update_login(
     bot: &Bot,
     state: &SharedUi,
     store: &mut UiStore,
     chat_id: ChatId,
-    sender_id: u64,
-    update_message_id: i32,
+    command: LoginCommand,
     login: Option<&LoginGateway>,
 ) -> ResponseResult<()> {
+    let LoginCommand {
+        sender_id,
+        message_id: update_message_id,
+        on_failure,
+    } = command;
     // Bind the transaction to the actual verified incoming command / callback
     // message, not a stored or zero-valued panel ID.
     let url = match login {
@@ -193,7 +219,12 @@ async fn update_login(
         None => None,
     };
     let started = url.is_some();
-    edit_panel(bot, store, chat_id, Screen::Login, url).await?;
+    let screen = if started || on_failure == StartFailure::Unavailable {
+        Screen::Login
+    } else {
+        Screen::Home
+    };
+    edit_panel(bot, store, chat_id, screen, url).await?;
     if let Some(panel) = store.panels.get_mut(&chat_id.0) {
         panel.login_message_id = started.then_some(update_message_id);
     }
@@ -449,8 +480,15 @@ async fn handle_message(
                 &state,
                 &mut store,
                 message.chat.id,
-                sender.id.0,
-                message.id.0,
+                LoginCommand {
+                    sender_id: sender.id.0,
+                    message_id: message.id.0,
+                    on_failure: if action == PublicAction::EnterTextClient {
+                        StartFailure::Home
+                    } else {
+                        StartFailure::Unavailable
+                    },
+                },
                 login.as_ref(),
             )
             .await?;
@@ -502,8 +540,11 @@ async fn handle_callback(
                 &state,
                 &mut store,
                 chat,
-                query.from.id.0,
-                message.id.0,
+                LoginCommand {
+                    sender_id: query.from.id.0,
+                    message_id: message.id.0,
+                    on_failure: StartFailure::Unavailable,
+                },
                 login.as_ref(),
             )
             .await?;
@@ -1041,6 +1082,40 @@ mod transport_integration_tests {
         );
         drop(store);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_login_host_keeps_start_on_home_and_says_so_on_login() {
+        // Nothing listens on port 9: every login start fails to connect.
+        let unreachable =
+            url::Url::parse("http://127.0.0.1:9/api/v1/telegram/login/start").unwrap();
+        for (command, expected) in [
+            ("/start", "Сесія Bond не підтверджена"),
+            ("/login", "AIS-авторизація недоступна"),
+        ] {
+            let (bot, server) = telegram_api(vec!["sendMessage", "deleteMessage"]);
+            let (state, path) = temp_ui();
+            state.lock().await.panels.insert(42, Panel::new(42, 10));
+            handle_message(
+                bot,
+                incoming(11, command),
+                state.clone(),
+                Some(LoginGateway::for_test(unreachable.clone())),
+            )
+            .await
+            .unwrap();
+            let requests = server.join().unwrap();
+            let text = requests[0].1["text"].as_str().unwrap();
+            assert!(text.contains(expected), "{command}: {text}");
+            let store = state.lock().await;
+            let panel = store.panels.get(&42).unwrap();
+            assert!(
+                panel.login_message_id.is_none(),
+                "{command}: no wait without a login"
+            );
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[tokio::test]
