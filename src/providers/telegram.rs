@@ -431,8 +431,10 @@ async fn show_bond(
             profile.experience.bond_xp,
             profile.experience.avaia_xp,
         ),
-        Ok(None) => "Щоб переглянути свій Bond, увійди через /login.".to_owned(),
-        Err(_) => "Не вдалося отримати профіль Bond. Спробуй /bond ще раз.".to_owned(),
+        Ok(None) => "0x1 · Bond\n\nЩоб переглянути свій Bond, увійди через /login.".to_owned(),
+        Err(_) => {
+            "0x1 · Bond\n\nНе вдалося отримати профіль Bond. Спробуй /bond ще раз.".to_owned()
+        }
     };
     let mut store = state.lock().await;
     if store.panels.get(&chat.0).is_some_and(|panel| {
@@ -675,6 +677,10 @@ mod tests {
             Some(PublicAction::Subscription)
         );
         assert_eq!(
+            private_action(true, true, false, "/bond"),
+            Some(PublicAction::OwnBond)
+        );
+        assert_eq!(
             private_action(true, true, false, "/inventory"),
             Some(PublicAction::NeedsCore)
         );
@@ -687,10 +693,12 @@ mod tests {
             (true, false, false),
             (true, true, true),
         ] {
-            assert_eq!(
-                private_action(private_chat, human_sender, forwarded, "/start"),
-                None
-            );
+            for command in ["/start", "/bond"] {
+                assert_eq!(
+                    private_action(private_chat, human_sender, forwarded, command),
+                    None
+                );
+            }
         }
     }
 

@@ -250,17 +250,22 @@ impl LoginGateway {
             provider_actor_id: actor,
             chat_id: chat,
         };
-        let response = self.post_signed(PROFILE_PATH, &query).await?;
+        let mut response = self.post_signed(PROFILE_PATH, &query).await?;
         let status = response.status();
         if status != reqwest::StatusCode::UNAUTHORIZED && !status.is_success() {
             return Err(LoginError::Unavailable);
         }
-        let bytes = response
-            .bytes()
+        const MAX_PROFILE_BYTES: usize = 4096;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|_| LoginError::Unavailable)?;
-        if bytes.len() > 4096 {
-            return Err(LoginError::InvalidResponse);
+            .map_err(|_| LoginError::Unavailable)?
+        {
+            if chunk.len() > MAX_PROFILE_BYTES - bytes.len() {
+                return Err(LoginError::InvalidResponse);
+            }
+            bytes.extend_from_slice(&chunk);
         }
         if status == reqwest::StatusCode::UNAUTHORIZED {
             let refusal: serde_json::Value =
