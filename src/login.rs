@@ -161,6 +161,19 @@ impl LoginGateway {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(start_url: Url) -> Self {
+        assert_eq!(start_url.host_str(), Some("127.0.0.1"));
+        let mut gateway = Self::new(
+            "https://nilx.one/api/v1/telegram/login/start",
+            "123:TEST",
+            "https://nilx.one/api/v1/telegram/login/callback".to_owned(),
+        )
+        .unwrap();
+        gateway.start_url = start_url;
+        gateway
+    }
+
     /// `nilxone_api::bot_login::sign_request`:
     /// `t=<unix>,v1=<hex HMAC-SHA256(key, "<t>\n<path>\n<body>")>`.
     fn signature(&self, timestamp: u64, path: &str, body: &[u8]) -> String {
