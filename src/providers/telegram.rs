@@ -461,7 +461,9 @@ async fn profile_text(
                     || "Гаманець Seeds недоступний для цієї сесії.".to_owned(),
                     |seeds| format!("Гаманець · {seeds} Seeds"),
                 );
-                format!("{balance}\nКишеня та рюкзак доступні на клієнті, де збережено інвентар.")
+                format!(
+                    "{balance}\nКишеня та рюкзак синхронізуються між клієнтами; чат показує лише гаманець Seeds."
+                )
             }))
         }
     }
@@ -554,6 +556,64 @@ async fn show_market_points(
     Ok(())
 }
 
+/// Only an original live share sent by the human on their own private chat
+/// can reach Core. A pin or a location sent via another bot is not a report.
+fn live_location(message: &Message) -> Option<(teloxide::types::Location, u64)> {
+    let sender = message.from.as_ref()?;
+    if !permits_private_command(
+        message.chat.is_private(),
+        !sender.is_bot,
+        message.forward_origin().is_some(),
+    ) || message.via_bot.is_some()
+        || message.sender_chat.is_some()
+        || i64::try_from(sender.id.0).ok() != Some(message.chat.id.0)
+    {
+        return None;
+    }
+    let point = *message.location()?;
+    point.live_period?;
+    // Movement of a live share arrives as edits of the first message; the
+    // observation time is then the edit's, not the share's start.
+    let observed = message.edit_date().copied().unwrap_or(message.date);
+    Some((point, u64::try_from(observed.timestamp()).ok()?))
+}
+
+async fn report_location(
+    message: &Message,
+    point: teloxide::types::Location,
+    observed_at: u64,
+    login: Option<&LoginGateway>,
+) -> Result<bool, LoginError> {
+    let Some(sender) = &message.from else {
+        return Err(LoginError::InvalidResponse);
+    };
+    match login {
+        Some(host) => {
+            host.report_live_location(
+                sender.id.0,
+                message.chat.id.0,
+                point.latitude,
+                point.longitude,
+                observed_at,
+            )
+            .await
+        }
+        None => Err(LoginError::Unavailable),
+    }
+}
+
+/// A moving live share: Telegram edits the first message. Each frame is
+/// reported quietly; the chat already got its answer for the first one.
+async fn handle_edited_message(
+    message: Message,
+    login: Option<LoginGateway>,
+) -> ResponseResult<()> {
+    if let Some((point, observed_at)) = live_location(&message) {
+        let _ = report_location(&message, point, observed_at, login.as_ref()).await;
+    }
+    Ok(())
+}
+
 async fn handle_message(
     bot: Bot,
     message: Message,
@@ -563,6 +623,19 @@ async fn handle_message(
     let Some(sender) = &message.from else {
         return Ok(());
     };
+    if let Some((point, observed_at)) = live_location(&message) {
+        let result = report_location(&message, point, observed_at, login.as_ref()).await;
+        let detail = match result {
+            Ok(true) => "Поточну позицію Bond оновлено.",
+            Ok(false) => {
+                "Позицію не оновлено. Її оновлює лише активний клієнт 0x1 у live-режимі: якщо зараз активний Mini App чи браузер, онови позицію там."
+            }
+            Err(_) => "Не вдалося надіслати геолокацію в Core.",
+        };
+        // Never quote, persist or log the reported coordinates in the bot.
+        bot.send_message(message.chat.id, detail).await?;
+        return Ok(());
+    }
     let Some(action) = private_action(
         message.chat.is_private(),
         !sender.is_bot,
@@ -781,6 +854,7 @@ pub async fn run_bot(bot: Bot, login: Option<LoginGateway>) -> io::Result<()> {
     let state: SharedUi = Arc::new(Mutex::new(UiStore::open(PathBuf::from(path))?));
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(handle_message))
+        .branch(Update::filter_edited_message().endpoint(handle_edited_message))
         .branch(Update::filter_callback_query().endpoint(handle_callback));
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state, login])
@@ -848,7 +922,7 @@ mod tests {
             (Screen::Home, "Сесія Bond не підтверджена Core"),
             (Screen::Subscription, "Підписка недоступна"),
             (Screen::Inventory, "Інвентар недоступний"),
-            (Screen::Travel, "Подорожі недоступні"),
+            (Screen::Travel, "надішли нову Live Location"),
             (Screen::Unavailable, "Жодних даних не змінено"),
         ] {
             let (view, keyboard) = render_panel(&panel, screen, None, 0);
@@ -1070,6 +1144,16 @@ mod transport_integration_tests {
                     serde_json::from_slice(&bytes[headers_end..headers_end + size]).unwrap();
                 requests.push((method.to_owned(), body));
 
+                if method == "location" {
+                    assert!(signed);
+                    assert_eq!(request_path, "/api/v1/telegram/location");
+                    write!(
+                        stream,
+                        "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
                 if matches!(method, "start" | "confirm" | "profile") {
                     assert!(signed);
                     if method == "profile" {
@@ -1173,6 +1257,78 @@ mod transport_integration_tests {
             "text": text
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn only_original_private_live_location_can_report_bond_position() {
+        let mut original = serde_json::to_value(incoming(17, "")).unwrap();
+        original.as_object_mut().unwrap().remove("text");
+        original["location"] = json!({"latitude": 50.45, "longitude": 30.52, "live_period": 900});
+        let read = |value| live_location(&serde_json::from_value(value).unwrap());
+        assert_eq!(read(original.clone()).unwrap().1, 1_700_000_000);
+
+        let mut pin = original.clone();
+        pin["location"]
+            .as_object_mut()
+            .unwrap()
+            .remove("live_period");
+        assert!(read(pin).is_none());
+
+        let mut forwarded = original.clone();
+        forwarded["forward_origin"] = json!({
+            "type": "user", "date": 1700000000,
+            "sender_user": {"id": 43, "is_bot": false, "first_name": "Elsewhere"}
+        });
+        assert!(read(forwarded).is_none());
+        let mut other_sender = original;
+        other_sender["from"]["id"] = json!(43);
+        assert!(read(other_sender).is_none());
+    }
+
+    #[tokio::test]
+    async fn original_live_location_is_sent_to_core_without_echoing_coordinates() {
+        let (bot, start_url, server) =
+            telegram_and_core_api(vec!["location", "sendMessage"], false);
+        let host = LoginGateway::for_test(start_url);
+        let (state, path) = temp_ui();
+        let mut message = serde_json::to_value(incoming(17, "")).unwrap();
+        message.as_object_mut().unwrap().remove("text");
+        message["location"] = json!({"latitude": 50.45, "longitude": 30.52, "live_period": 900});
+        handle_message(
+            bot,
+            serde_json::from_value(message).unwrap(),
+            state,
+            Some(host),
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[0].1,
+            json!({
+                "chat": {"version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42},
+                "latitude": 50.45, "longitude": 30.52, "observed_at": 1700000000
+            })
+        );
+        assert_eq!(requests[1].1["text"], "Поточну позицію Bond оновлено.");
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_moving_live_share_reports_each_edit_quietly_at_its_edit_time() {
+        let (bot, start_url, server) = telegram_and_core_api(vec!["location"], false);
+        let host = LoginGateway::for_test(start_url);
+        let mut message = serde_json::to_value(incoming(17, "")).unwrap();
+        message.as_object_mut().unwrap().remove("text");
+        message["location"] = json!({"latitude": 50.46, "longitude": 30.53, "live_period": 900});
+        message["edit_date"] = json!(1_700_000_030);
+        let _ = bot;
+        handle_edited_message(serde_json::from_value(message).unwrap(), Some(host))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "an edit never posts to the chat");
+        assert_eq!(requests[0].1["observed_at"], 1_700_000_030);
     }
 
     fn callback(message_id: i32, data: &str) -> CallbackQuery {
@@ -1600,7 +1756,12 @@ mod transport_integration_tests {
         assert!(avaia.contains("0x0skyai"));
         assert!(avaia.contains("50.45000, 30.52000"));
         assert_eq!(requests[4].1["section"], "wallet");
-        assert!(requests[5].1["text"].as_str().unwrap().contains("51 Seeds"));
+        let inventory = requests[5].1["text"].as_str().unwrap();
+        assert!(inventory.contains("51 Seeds"));
+        assert!(inventory.contains("синхронізуються"));
+        assert!(!inventory.contains("де збережено"));
+        assert!(!inventory.contains("завжди"));
+        assert!(!inventory.contains("найактуальніша"));
         std::fs::remove_file(path).unwrap();
     }
 
