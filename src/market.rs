@@ -249,13 +249,17 @@ struct MarketPoints {
 }
 
 pub(crate) async fn registered_market_points() -> Result<Vec<RegisteredMarketPoint>, MarketError> {
+    fetch_registered_points(POINTS_URL).await
+}
+
+async fn fetch_registered_points(url: &str) -> Result<Vec<RegisteredMarketPoint>, MarketError> {
     let client = Client::builder()
         .redirect(Policy::none())
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|_| MarketError::InvalidConfiguration)?;
     let mut response = client
-        .get(POINTS_URL)
+        .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
@@ -314,33 +318,6 @@ fn parse_registered_points(bytes: &[u8]) -> Result<Vec<RegisteredMarketPoint>, M
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn market_points_accepts_registered_market_addresses_only() {
-        let valid = json!({"points": [
-            {"address": "zoloti", "station_pub_dress": "0xda-market-zoloti-vorota", "path": "/zoloti"},
-            {"address": "raion", "station_pub_dress": "0xda-market-raion", "path": "/raion"}
-        ]});
-        let decode = |value: &Value| parse_registered_points(value.to_string().as_bytes());
-        let points = decode(&valid).unwrap();
-        assert_eq!(points[0].address, "raion");
-        assert_eq!(points[1].station_pub_dress, "0xda-market-zoloti-vorota");
-        assert!(decode(&json!({"points": []})).unwrap().is_empty());
-        assert!(decode(&json!({})).is_err());
-
-        for (field, bad) in [
-            ("path", "https://example.org/zoloti"),
-            ("address", "../zoloti"),
-            ("station_pub_dress", "0x1another-zoloti"),
-        ] {
-            let mut invalid = valid.clone();
-            invalid["points"][0][field] = json!(bad);
-            assert!(decode(&invalid).is_err());
-        }
-        let mut duplicate = valid.clone();
-        duplicate["points"][1] = duplicate["points"][0].clone();
-        assert!(decode(&duplicate).is_err());
-    }
 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -486,5 +463,80 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn market_points_accepts_registered_market_addresses_only() {
+        let valid = json!({"points": [
+            {"address": "zoloti", "station_pub_dress": "0xda-market-zoloti-vorota", "path": "/zoloti"},
+            {"address": "raion", "station_pub_dress": "0xda-market-raion", "path": "/raion"}
+        ]});
+        let decode = |value: &Value| parse_registered_points(value.to_string().as_bytes());
+        let points = decode(&valid).unwrap();
+        assert_eq!(points[0].address, "raion");
+        assert_eq!(points[1].station_pub_dress, "0xda-market-zoloti-vorota");
+        assert!(decode(&json!({"points": []})).unwrap().is_empty());
+        assert!(decode(&json!({})).is_err());
+
+        for (field, bad) in [
+            ("path", "https://example.org/zoloti"),
+            ("address", "../zoloti"),
+            ("station_pub_dress", "0x1another-zoloti"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["points"][0][field] = json!(bad);
+            assert!(decode(&invalid).is_err());
+        }
+        let mut duplicate = valid.clone();
+        duplicate["points"][1] = duplicate["points"][0].clone();
+        assert!(decode(&duplicate).is_err());
+    }
+
+    /// One canned HTTP response on a local port; the request is read and dropped.
+    fn serve_once(response: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/points", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&response);
+        });
+        url
+    }
+
+    fn http(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[tokio::test]
+    async fn the_directory_is_read_only_from_a_small_successful_answer() {
+        let body = br#"{"points":[{"address":"raion","station_pub_dress":"0xda-market-raion","path":"/raion"}]}"#;
+        let ok = fetch_registered_points(&serve_once(http("200 OK", "", body))).await;
+        assert_eq!(ok.unwrap()[0].address, "raion");
+
+        let down =
+            fetch_registered_points(&serve_once(http("503 Service Unavailable", "", b""))).await;
+        assert!(matches!(down, Err(MarketError::Unavailable)));
+
+        // A redirect is an answer, not something to follow.
+        let moved = fetch_registered_points(&serve_once(http(
+            "302 Found",
+            "Location: https://example.org/points\r\n",
+            b"",
+        )))
+        .await;
+        assert!(matches!(moved, Err(MarketError::Unavailable)));
+
+        let huge = vec![b' '; MAX_DIRECTORY_BYTES + 1];
+        let too_big = fetch_registered_points(&serve_once(http("200 OK", "", &huge))).await;
+        assert!(matches!(too_big, Err(MarketError::InvalidResponse)));
     }
 }
