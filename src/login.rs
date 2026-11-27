@@ -37,6 +37,7 @@ pub struct LoginGateway {
     /// credential for the product host.
     key: Arc<hmac::Key>,
     registered_callback: String,
+    pub(crate) admin_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +253,7 @@ impl LoginGateway {
             start_url,
             key: Arc::new(hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref())),
             registered_callback,
+            admin_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -285,7 +287,7 @@ impl LoginGateway {
         value
     }
 
-    async fn post_signed(
+    pub(crate) async fn post_signed(
         &self,
         path: &str,
         request: &impl Serialize,
