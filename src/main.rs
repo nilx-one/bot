@@ -18,14 +18,15 @@ fn matches_production_bot(actual: Option<&str>) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (check_only, public_key_only) =
+    let (check_only, public_key_only, check_gateway) =
         match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-            [] => (false, false),
-            [flag] if flag == "--check" => (true, false),
-            [flag] if flag == "--gateway-public-key" => (true, true),
+            [] => (false, false, false),
+            [flag] if flag == "--check" => (true, false, false),
+            [flag] if flag == "--gateway-public-key" => (true, true, false),
+            [flag] if flag == "--check-gateway" => (true, false, true),
             _ => {
                 return Err(std::io::Error::other(
-                    "Usage: nilx-one-bot [--check|--gateway-public-key]",
+                    "Usage: nilx-one-bot [--check|--gateway-public-key|--check-gateway]",
                 )
                 .into());
             }
@@ -56,6 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Only print verified public metadata. No token, seed or signature.
         println!("TELEGRAM_BOT_ID={}", me.user.id.0);
         println!("TELEGRAM_BOT_PUBLIC_KEY={public_key}");
+    } else if check_gateway {
+        login
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Gateway configuration is required"))?
+            .check_authority()
+            .await
+            .map_err(|_| std::io::Error::other("Signed Gateway readiness probe failed"))?;
+        println!("Telegram Gateway v2 signed probe passed");
     } else if !check_only {
         run_bot(bot, login).await?;
     }

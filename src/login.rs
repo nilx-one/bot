@@ -324,6 +324,18 @@ impl LoginGateway {
             .map_err(|_| LoginError::Unavailable)
     }
 
+    /// Authenticated, read-only readiness probe; no login or Bond mutation.
+    pub async fn check_authority(&self) -> Result<(), LoginError> {
+        let response = self
+            .post_signed("/api/v1/telegram/gateway/health", &serde_json::json!({}))
+            .await?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            Ok(())
+        } else {
+            Err(LoginError::Unavailable)
+        }
+    }
+
     pub(crate) async fn report_live_location(
         &self,
         actor: u64,
