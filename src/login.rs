@@ -103,6 +103,38 @@ pub(crate) struct AvaiaLocation {
 #[derive(Deserialize)]
 pub(crate) struct WalletProfile {
     pub seeds: Option<u64>,
+    pub recent: Option<Vec<SeedsEntry>>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SeedsEntry {
+    pub kind: SeedsEntryKind,
+    pub delta: i64,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SeedsEntryKind {
+    Starter,
+    Find,
+    Sale,
+    Craft,
+    Subscription,
+    #[serde(other)]
+    Other,
+}
+
+impl SeedsEntryKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Starter => "Стартове нарахування",
+            Self::Find => "Знахідка",
+            Self::Sale => "Продаж",
+            Self::Craft => "Крафт",
+            Self::Subscription => "Підписка",
+            Self::Other => "Операція",
+        }
+    }
 }
 
 #[derive(Serialize)]

@@ -457,13 +457,26 @@ async fn profile_text(
         ProfileSection::Wallet => {
             let profile: Option<WalletProfile> = host.read_profile(actor, chat, section).await?;
             Ok(profile.map(|profile| {
-                let balance = profile.seeds.map_or_else(
-                    || "Гаманець Seeds недоступний для цієї сесії.".to_owned(),
-                    |seeds| format!("Гаманець · {seeds} Seeds"),
+                let mut text = match profile.seeds {
+                    Some(seeds) => format!("Гаманець · {seeds} Seeds"),
+                    None => "Гаманець Seeds недоступний для цієї сесії.".to_owned(),
+                };
+                if let (Some(_), Some(recent)) = (profile.seeds, profile.recent) {
+                    if recent.is_empty() {
+                        text.push_str("\n\nПоки немає записів про операції.");
+                    } else {
+                        use std::fmt::Write as _;
+                        text.push_str("\n\nОстанні записані операції");
+                        for entry in recent.iter().take(10) {
+                            let _ =
+                                write!(text, "\n{} · {:+} Seeds", entry.kind.label(), entry.delta);
+                        }
+                    }
+                }
+                text.push_str(
+                    "\n\nКишеня та рюкзак синхронізуються між клієнтами; чат показує лише гаманець Seeds.",
                 );
-                format!(
-                    "{balance}\nКишеня та рюкзак синхронізуються між клієнтами; чат показує лише гаманець Seeds."
-                )
+                text
             }))
         }
     }
@@ -1190,7 +1203,10 @@ mod transport_integration_tests {
                         json!({"authorization_url": url.as_str(), "expires_in_seconds": 300})
                     } else if method == "profile" {
                         match requests.last().unwrap().1["section"].as_str() {
-                            Some("wallet") => json!({"seeds": 51}),
+                            Some("wallet") => json!({"seeds": 51, "recent": [
+                                {"kind": "craft", "delta": -9, "at_ms": 2000},
+                                {"kind": "starter", "delta": 60, "at_ms": 1000}
+                            ]}),
                             Some("avaia") => json!({"avaia": {
                                 "pub_dress": "0x0skyai",
                                 "configured": true,
@@ -1794,6 +1810,7 @@ mod transport_integration_tests {
         assert!(!inventory.contains("де збережено"));
         assert!(!inventory.contains("завжди"));
         assert!(!inventory.contains("найактуальніша"));
+        assert!(inventory.contains("Крафт · -9 Seeds\nСтартове нарахування · +60 Seeds"));
         std::fs::remove_file(path).unwrap();
     }
 
