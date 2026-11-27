@@ -529,7 +529,46 @@ fn live_location(message: &Message) -> Option<(teloxide::types::Location, u64)> 
     }
     let point = *message.location()?;
     point.live_period?;
-    Some((point, u64::try_from(message.date.timestamp()).ok()?))
+    // Movement of a live share arrives as edits of the first message; the
+    // observation time is then the edit's, not the share's start.
+    let observed = message.edit_date().copied().unwrap_or(message.date);
+    Some((point, u64::try_from(observed.timestamp()).ok()?))
+}
+
+async fn report_location(
+    message: &Message,
+    point: teloxide::types::Location,
+    observed_at: u64,
+    login: Option<&LoginGateway>,
+) -> Result<bool, LoginError> {
+    let Some(sender) = &message.from else {
+        return Err(LoginError::InvalidResponse);
+    };
+    match login {
+        Some(host) => {
+            host.report_live_location(
+                sender.id.0,
+                message.chat.id.0,
+                point.latitude,
+                point.longitude,
+                observed_at,
+            )
+            .await
+        }
+        None => Err(LoginError::Unavailable),
+    }
+}
+
+/// A moving live share: Telegram edits the first message. Each frame is
+/// reported quietly; the chat already got its answer for the first one.
+async fn handle_edited_message(
+    message: Message,
+    login: Option<LoginGateway>,
+) -> ResponseResult<()> {
+    if let Some((point, observed_at)) = live_location(&message) {
+        let _ = report_location(&message, point, observed_at, login.as_ref()).await;
+    }
+    Ok(())
 }
 
 async fn handle_message(
@@ -542,23 +581,11 @@ async fn handle_message(
         return Ok(());
     };
     if let Some((point, observed_at)) = live_location(&message) {
-        let result = match login.as_ref() {
-            Some(host) => {
-                host.report_live_location(
-                    sender.id.0,
-                    message.chat.id.0,
-                    point.latitude,
-                    point.longitude,
-                    observed_at,
-                )
-                .await
-            }
-            None => Err(LoginError::Unavailable),
-        };
+        let result = report_location(&message, point, observed_at, login.as_ref()).await;
         let detail = match result {
             Ok(true) => "Поточну позицію Bond оновлено.",
             Ok(false) => {
-                "Позицію не оновлено. Потрібна активна сесія, live-режим і свіжа геолокація."
+                "Позицію не оновлено. Її оновлює лише активний клієнт 0x1 у live-режимі: якщо зараз активний Mini App чи браузер, онови позицію там."
             }
             Err(_) => "Не вдалося надіслати геолокацію в Core.",
         };
@@ -765,6 +792,7 @@ pub async fn run_bot(bot: Bot, login: Option<LoginGateway>) -> io::Result<()> {
     let state: SharedUi = Arc::new(Mutex::new(UiStore::open(PathBuf::from(path))?));
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(handle_message))
+        .branch(Update::filter_edited_message().endpoint(handle_edited_message))
         .branch(Update::filter_callback_query().endpoint(handle_callback));
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state, login])
@@ -1218,6 +1246,23 @@ mod transport_integration_tests {
         );
         assert_eq!(requests[1].1["text"], "Поточну позицію Bond оновлено.");
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_moving_live_share_reports_each_edit_quietly_at_its_edit_time() {
+        let (bot, start_url, server) = telegram_and_core_api(vec!["location"], false);
+        let host = LoginGateway::for_test(start_url);
+        let mut message = serde_json::to_value(incoming(17, "")).unwrap();
+        message.as_object_mut().unwrap().remove("text");
+        message["location"] = json!({"latitude": 50.46, "longitude": 30.53, "live_period": 900});
+        message["edit_date"] = json!(1_700_000_030);
+        let _ = bot;
+        handle_edited_message(serde_json::from_value(message).unwrap(), Some(host))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "an edit never posts to the chat");
+        assert_eq!(requests[0].1["observed_at"], 1_700_000_030);
     }
 
     fn callback(message_id: i32, data: &str) -> CallbackQuery {
