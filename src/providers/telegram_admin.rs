@@ -383,7 +383,13 @@ pub(super) async fn handle_callback(
         bot.answer_callback_query(query.id.clone()).await?;
         return Ok(());
     }
-    let _guard = gateway.admin_lock.lock().await;
+    // Preserve edit ordering without leaving a callback waiting indefinitely.
+    let Ok(_guard) = tokio::time::timeout(Duration::from_secs(2), admin_lock.lock()).await else {
+        bot.answer_callback_query(query.id.clone())
+            .text("Оновлення панелі. Спробуйте ще раз.")
+            .await?;
+        return Ok(());
+    };
     let request = Decision {
         chat: Chat {
             version: WIRE_VERSION,
