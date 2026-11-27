@@ -461,7 +461,9 @@ async fn profile_text(
                     || "Гаманець Seeds недоступний для цієї сесії.".to_owned(),
                     |seeds| format!("Гаманець · {seeds} Seeds"),
                 );
-                format!("{balance}\nКишеня та рюкзак доступні на клієнті, де збережено інвентар.")
+                format!(
+                    "{balance}\nКишеня та рюкзак синхронізуються між клієнтами; чат показує лише гаманець Seeds."
+                )
             }))
         }
     }
@@ -1690,7 +1692,12 @@ mod transport_integration_tests {
         assert!(avaia.contains("0x0skyai"));
         assert!(avaia.contains("50.45000, 30.52000"));
         assert_eq!(requests[4].1["section"], "wallet");
-        assert!(requests[5].1["text"].as_str().unwrap().contains("51 Seeds"));
+        let inventory = requests[5].1["text"].as_str().unwrap();
+        assert!(inventory.contains("51 Seeds"));
+        assert!(inventory.contains("синхронізуються"));
+        assert!(!inventory.contains("де збережено"));
+        assert!(!inventory.contains("завжди"));
+        assert!(!inventory.contains("найактуальніша"));
         std::fs::remove_file(path).unwrap();
     }
 
