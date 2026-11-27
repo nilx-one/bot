@@ -809,7 +809,11 @@ async fn handle_callback(
         bot.answer_callback_query(query.id).await?;
         return Ok(());
     };
-    if query.data.as_deref().is_some_and(|data| data.starts_with("ar:")) {
+    if query
+        .data
+        .as_deref()
+        .is_some_and(|data| data.starts_with("ar:"))
+    {
         return super::telegram_admin::handle_callback(&bot, &query, login.as_ref()).await;
     }
     let chat = message.chat.id;
@@ -878,9 +882,9 @@ pub async fn run_bot(bot: Bot, login: Option<LoginGateway>) -> io::Result<()> {
         std::env::var("BOT_UI_STATE_PATH").unwrap_or_else(|_| "bot-ui-state.json".to_owned());
     let admin_path = PathBuf::from(path.as_str()).with_extension("admin-slots.json");
     let state: SharedUi = Arc::new(Mutex::new(UiStore::open(PathBuf::from(path))?));
-    let admin_worker = login.clone().map(|gateway| {
-        tokio::spawn(super::telegram_admin::run(bot.clone(), gateway, admin_path))
-    });
+    let admin_worker = login
+        .clone()
+        .map(|gateway| tokio::spawn(super::telegram_admin::run(bot.clone(), gateway, admin_path)));
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(handle_message))
         .branch(Update::filter_edited_message().endpoint(handle_edited_message))

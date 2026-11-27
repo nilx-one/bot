@@ -222,7 +222,10 @@ impl SlotCache {
         {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&tmp, serde_json::to_vec(&self.replacements).map_err(io::Error::other)?)?;
+        fs::write(
+            &tmp,
+            serde_json::to_vec(&self.replacements).map_err(io::Error::other)?,
+        )?;
         fs::rename(tmp, &self.path)
     }
 }
@@ -423,25 +426,58 @@ mod tests {
     #[test]
     fn callback_keeps_the_legacy_opaque_reference_and_is_strict() {
         let token = "0123456789abcdef0123456789abcdef";
-        assert_eq!(parse_callback(&format!("ar:y:{token}")), Some((true, token)));
-        assert_eq!(parse_callback(&format!("ar:n:{token}")), Some((false, token)));
-        for invalid in ["ar:y:bad", "ar:x:0123456789abcdef0123456789abcdef", "ar:y:0123456789abcdef0123456789abcdef:extra"] {
+        assert_eq!(
+            parse_callback(&format!("ar:y:{token}")),
+            Some((true, token))
+        );
+        assert_eq!(
+            parse_callback(&format!("ar:n:{token}")),
+            Some((false, token))
+        );
+        for invalid in [
+            "ar:y:bad",
+            "ar:x:0123456789abcdef0123456789abcdef",
+            "ar:y:0123456789abcdef0123456789abcdef:extra",
+        ] {
             assert!(parse_callback(invalid).is_none());
         }
         let (text, buttons) = render(
-            &[Entry { request_token: token.into(), pub_dress: "0x0new".into() }],
+            &[Entry {
+                request_token: token.into(),
+                pub_dress: "0x0new".into(),
+            }],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(text.contains("0x0new"));
-        assert!(serde_json::to_string(&buttons).unwrap().contains(&format!("ar:y:{token}")));
-        assert!(render(&[Entry {request_token: "invalid".into(), pub_dress: "0x0new".into()}], None).is_none());
+        assert!(
+            serde_json::to_string(&buttons)
+                .unwrap()
+                .contains(&format!("ar:y:{token}"))
+        );
+        assert!(
+            render(
+                &[Entry {
+                    request_token: "invalid".into(),
+                    pub_dress: "0x0new".into()
+                }],
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn replacement_is_used_only_until_core_reports_a_different_slot() {
         let cache = SlotCache {
             path: PathBuf::from("unused"),
-            replacements: HashMap::from([(42, Replacement { previous: Some(7), sent: 9 })]),
+            replacements: HashMap::from([(
+                42,
+                Replacement {
+                    previous: Some(7),
+                    sent: 9,
+                },
+            )]),
         };
         assert_eq!(cache.slot(42, Some(7)), Some(9));
         assert_eq!(cache.slot(42, Some(10)), Some(10));
@@ -452,16 +488,24 @@ mod tests {
     #[test]
     fn decision_wire_is_the_signed_core_contract() {
         let request = Decision {
-            chat: Chat { version: 1, provider: "telegram", provider_actor_id: 42, chat_id: 42 },
+            chat: Chat {
+                version: 1,
+                provider: "telegram",
+                provider_actor_id: 42,
+                chat_id: 42,
+            },
             source_message_id: 9,
             request_token: "0123456789abcdef0123456789abcdef",
             approve: true,
         };
-        assert_eq!(serde_json::to_value(&request).unwrap(), serde_json::json!({
-            "chat": {"version":1, "provider":"telegram", "provider_actor_id":42, "chat_id":42},
-            "source_message_id":9,
-            "request_token":"0123456789abcdef0123456789abcdef",
-            "approve":true
-        }));
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "chat": {"version":1, "provider":"telegram", "provider_actor_id":42, "chat_id":42},
+                "source_message_id":9,
+                "request_token":"0123456789abcdef0123456789abcdef",
+                "approve":true
+            })
+        );
     }
 }
