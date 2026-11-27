@@ -4,7 +4,7 @@
 //! Transport-only admin inbox adapter for nilx-one/core#186.
 //! The signed Core gateway owns recipients, role decisions and delivery leases.
 
-use std::{collections::HashMap, fs, io, path::PathBuf, time::Duration};
+use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use teloxide::{
@@ -14,6 +14,8 @@ use teloxide::{
 };
 
 use crate::login::{LoginError, LoginGateway};
+
+pub(super) type AdminLock = Arc<tokio::sync::Mutex<()>>;
 
 // Strict typed mirrors of nilxone_api::bot_admin, until that Core PR is
 // merged and the shared wire crate can be pinned in this repository.
@@ -200,11 +202,18 @@ struct SlotCache {
 impl SlotCache {
     fn open(path: PathBuf) -> io::Result<Self> {
         let replacements = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
+            Ok(bytes) => Self::decode(&bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
             Err(error) => return Err(error),
         };
         Ok(Self { path, replacements })
+    }
+
+    fn decode(bytes: &[u8]) -> HashMap<i64, Replacement> {
+        serde_json::from_slice(bytes).unwrap_or_else(|_| {
+            tracing::warn!("corrupt admin replacement cache; using Core message slots");
+            HashMap::new()
+        })
     }
 
     fn slot(&self, chat: i64, core: Option<i32>) -> Option<i32> {
@@ -310,7 +319,7 @@ async fn deliver(bot: &Bot, cache: &mut SlotCache, gateway: &LoginGateway, job: 
     }
 }
 
-pub(super) async fn run(bot: Bot, gateway: LoginGateway, path: PathBuf) {
+pub(super) async fn run(bot: Bot, gateway: LoginGateway, path: PathBuf, admin_lock: AdminLock) {
     let mut cache = match SlotCache::open(path) {
         Ok(cache) => cache,
         Err(_) => {
@@ -324,7 +333,7 @@ pub(super) async fn run(bot: Bot, gateway: LoginGateway, path: PathBuf) {
         ticker.tick().await;
         // Serialize panel edits and callback decisions. Do not lock the
         // normal Bot UI or block its polling / login.
-        let _guard = gateway.admin_lock.lock().await;
+        let _guard = admin_lock.lock().await;
         let result = call::<PullResponse>(
             &gateway,
             PULL_PATH,
@@ -350,6 +359,7 @@ pub(super) async fn handle_callback(
     bot: &Bot,
     query: &CallbackQuery,
     gateway: Option<&LoginGateway>,
+    admin_lock: &AdminLock,
 ) -> ResponseResult<()> {
     let Some(message) = query.message.as_ref().and_then(|m| m.regular_message()) else {
         bot.answer_callback_query(query.id.clone()).await?;
@@ -483,6 +493,59 @@ mod tests {
         assert_eq!(cache.slot(42, Some(10)), Some(10));
         assert_eq!(cache.slot(42, None), None);
         assert_eq!(cache.slot(43, Some(7)), Some(7));
+    }
+
+    #[test]
+    fn corrupt_cache_is_only_a_lost_hint() {
+        assert!(SlotCache::decode(b"{broken").is_empty());
+        let cache = SlotCache {
+            path: PathBuf::from("unused"),
+            replacements: SlotCache::decode(b"{broken"),
+        };
+        assert_eq!(cache.slot(42, Some(7)), Some(7));
+    }
+
+    #[test]
+    fn pull_delivery_and_ack_match_core_wire() {
+        let pull = Pull {
+            version: WIRE_VERSION,
+            limit: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(pull).unwrap(),
+            serde_json::json!({"version": 1, "limit": 1})
+        );
+        let lease = serde_json::json!({
+            "kind": "approved",
+            "candidate_pub_dress": "0x0new",
+            "provider_actor_id": 42,
+            "claimed_at": 1_800_000_000
+        });
+        let delivery = serde_json::json!({"deliveries": [{
+            "lease": lease.clone(),
+            "admin_message_id": 7,
+            "pending": [{
+                "request_token": "0123456789abcdef0123456789abcdef",
+                "pub_dress": "0x0next"
+            }]
+        }]});
+        let response: PullResponse = serde_json::from_value(delivery).unwrap();
+        let job = &response.deliveries[0];
+        assert_eq!(job.admin_message_id, Some(7));
+        assert_eq!(job.pending[0].pub_dress, "0x0next");
+        assert_eq!(
+            job.pending[0].request_token,
+            "0123456789abcdef0123456789abcdef"
+        );
+        let ack = Ack {
+            version: WIRE_VERSION,
+            lease: &job.lease,
+            message_id: 9,
+        };
+        assert_eq!(
+            serde_json::to_value(ack).unwrap(),
+            serde_json::json!({"version": 1, "lease": lease, "message_id": 9})
+        );
     }
 
     #[test]
