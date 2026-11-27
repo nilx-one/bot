@@ -6,7 +6,7 @@
 //! original `/login` message. It does not construct its own state/nonce, verify identity,
 //! exchange codes, hold Bond sessions or tokens, or link accounts.
 
-use ring::hmac;
+use ring::{hmac, signature::{Ed25519KeyPair, KeyPair as _}};
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -35,7 +35,7 @@ pub struct LoginGateway {
     start_url: Url,
     /// Derived from the bot's own Telegram token: the bot holds no other
     /// credential for the product host.
-    key: Arc<hmac::Key>,
+    key: Arc<Ed25519KeyPair>,
     registered_callback: String,
 }
 
@@ -178,6 +178,27 @@ struct StartResponse {
     expires_in_seconds: u64,
 }
 
+const SIGNING_SEED_DOMAIN: &[u8] = b"0x1-telegram-bot-signing-seed-v2";
+const REQUEST_DOMAIN: &str = "0x1-telegram-bot-request-v2";
+
+fn bot_signing_key(token: &str) -> Result<Ed25519KeyPair, &'static str> {
+    let seed = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, token.trim().as_bytes()), SIGNING_SEED_DOMAIN);
+    Ed25519KeyPair::from_seed_unchecked(seed.as_ref()).map_err(|_| "cannot derive Bot workload key")
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut value, byte| {
+        let _ = write!(value, "{byte:02x}");
+        value
+    })
+}
+
+/// Public verification metadata only. The private key is never exported.
+pub fn gateway_public_key(token: &str) -> Result<String, &'static str> {
+    Ok(encode_hex(bot_signing_key(token)?.public_key().as_ref()))
+}
+
 impl LoginGateway {
     /// Disabled if both settings are missing; a partial configuration fails at
     /// startup rather than running with a weaker login flow. `bot_token` is
@@ -243,14 +264,11 @@ impl LoginGateway {
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(|_| "failed to initialize the HTTP transport")?;
-        let derived = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, b"0x1-telegram-bot-request-v1"),
-            bot_token.as_bytes(),
-        );
+        let key = bot_signing_key(bot_token)?;
         Ok(Self {
             http,
             start_url,
-            key: Arc::new(hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref())),
+            key: Arc::new(key),
             registered_callback,
         })
     }
@@ -268,21 +286,11 @@ impl LoginGateway {
         gateway
     }
 
-    /// `nilxone_api::bot_login::sign_request`:
-    /// `t=<unix>,v1=<hex HMAC-SHA256(key, "<t>\n<path>\n<body>")>`.
+    /// Domain-separated Ed25519 signature over the timestamp, path and body.
     fn signature(&self, timestamp: u64, path: &str, body: &[u8]) -> String {
-        let mut context = hmac::Context::with_key(&self.key);
-        context.update(timestamp.to_string().as_bytes());
-        context.update(b"\n");
-        context.update(path.as_bytes());
-        context.update(b"\n");
-        context.update(body);
-        let mut value = format!("t={timestamp},v1=");
-        for byte in context.sign().as_ref() {
-            use std::fmt::Write as _;
-            let _ = write!(value, "{byte:02x}");
-        }
-        value
+        let mut message = format!("{REQUEST_DOMAIN}\n{timestamp}\n{path}\n").into_bytes();
+        message.extend_from_slice(body);
+        format!("t={timestamp},v2={}", encode_hex(self.key.sign(&message).as_ref()))
     }
 
     async fn post_signed(
@@ -633,10 +641,14 @@ mod tests {
             CALLBACK.into(),
         )
         .unwrap();
-        // The vector nilxone_api::bot_login::sign_request produces.
+        assert_eq!(
+            gateway_public_key("123456:test-bot-token").unwrap(),
+            "635f952c2b4490eef64237b043885c1823b2d53ed48422e23a7216f7302cbf31"
+        );
+        // Shared deterministic v2 vector: only public verification crosses the boundary.
         assert_eq!(
             gateway.signature(1_000, START_PATH, br#"{"version":1}"#),
-            "t=1000,v1=c2426fd9704a0ebc90df96d56d8df7a9befc09cc46a2c58b2f8bb2909f167cfe"
+            "t=1000,v2=fc6771c7e61afc165ec525874bf779f3c26ef2635d040ca16200e9c1bdbd30b7a3aab5944c512e662d19774dab0a58d9fb0dba2917cc3ffb1d14af2d6e883d05"
         );
         assert_ne!(
             gateway.signature(1_000, CONFIRM_PATH, br#"{"version":1}"#),
