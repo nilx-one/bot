@@ -18,6 +18,7 @@ pub enum PublicAction {
     OwnBond,
     OwnAvaia,
     Inventory,
+    MarketPoints,
     /// Requires verified AIS identity, Core product session and typed gateway.
     NeedsCore,
     Ignore,
@@ -41,6 +42,7 @@ pub fn classify_message(text: &str) -> PublicAction {
         "/bond" => PublicAction::OwnBond,
         "/avaia" => PublicAction::OwnAvaia,
         "/inventory" => PublicAction::Inventory,
+        "/xping" => PublicAction::MarketPoints,
         "/subscription" => PublicAction::Subscription,
         command if command.starts_with('/') => PublicAction::NeedsCore,
         _ => PublicAction::Ignore,

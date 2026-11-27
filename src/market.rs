@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Client, redirect::Policy};
 use ring::hmac;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
 
@@ -232,9 +233,115 @@ impl MarketGateway {
     }
 }
 
+const POINTS_URL: &str = "https://0xda-market.nilx.one/nilx-browser/points";
+const MAX_DIRECTORY_BYTES: usize = 64 * 1024;
+
+#[derive(Deserialize)]
+pub(crate) struct RegisteredMarketPoint {
+    pub address: String,
+    pub station_pub_dress: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct MarketPoints {
+    points: Vec<RegisteredMarketPoint>,
+}
+
+pub(crate) async fn registered_market_points() -> Result<Vec<RegisteredMarketPoint>, MarketError> {
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|_| MarketError::InvalidConfiguration)?;
+    let mut response = client
+        .get(POINTS_URL)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|_| MarketError::Unavailable)?;
+    if !response.status().is_success() {
+        return Err(MarketError::Unavailable);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| MarketError::Unavailable)?
+    {
+        if chunk.len() > MAX_DIRECTORY_BYTES - bytes.len() {
+            return Err(MarketError::InvalidResponse);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    parse_registered_points(&bytes)
+}
+
+fn parse_registered_points(bytes: &[u8]) -> Result<Vec<RegisteredMarketPoint>, MarketError> {
+    let mut directory: MarketPoints =
+        serde_json::from_slice(bytes).map_err(|_| MarketError::InvalidResponse)?;
+    let segment = |value: &str, max: usize| {
+        value.len() <= max
+            && value.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            })
+    };
+    let mut stations = std::collections::HashSet::new();
+    let mut addresses = std::collections::HashSet::new();
+    if directory.points.len() > 256
+        || directory.points.iter().any(|point| {
+            !segment(&point.address, 48)
+                || !point
+                    .station_pub_dress
+                    .strip_prefix("0xda-market-")
+                    .is_some_and(|place| segment(place, 64))
+                || point.path != format!("/{}", point.address)
+                || !addresses.insert(point.address.as_str())
+                || !stations.insert(point.station_pub_dress.as_str())
+        })
+    {
+        return Err(MarketError::InvalidResponse);
+    }
+    directory
+        .points
+        .sort_unstable_by(|a, b| a.address.cmp(&b.address));
+    Ok(directory.points)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn market_points_accepts_registered_market_addresses_only() {
+        let valid = json!({"points": [
+            {"address": "zoloti", "station_pub_dress": "0xda-market-zoloti-vorota", "path": "/zoloti"},
+            {"address": "raion", "station_pub_dress": "0xda-market-raion", "path": "/raion"}
+        ]});
+        let decode = |value: &Value| parse_registered_points(value.to_string().as_bytes());
+        let points = decode(&valid).unwrap();
+        assert_eq!(points[0].address, "raion");
+        assert_eq!(points[1].station_pub_dress, "0xda-market-zoloti-vorota");
+        assert!(decode(&json!({"points": []})).unwrap().is_empty());
+        assert!(decode(&json!({})).is_err());
+
+        for (field, bad) in [
+            ("path", "https://example.org/zoloti"),
+            ("address", "../zoloti"),
+            ("station_pub_dress", "0x1another-zoloti"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["points"][0][field] = json!(bad);
+            assert!(decode(&invalid).is_err());
+        }
+        let mut duplicate = valid.clone();
+        duplicate["points"][1] = duplicate["points"][0].clone();
+        assert!(decode(&duplicate).is_err());
+    }
+
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     fn gateway() -> MarketGateway {

@@ -513,6 +513,47 @@ async fn show_profile(
     Ok(())
 }
 
+async fn show_market_points(
+    bot: &Bot,
+    state: &SharedUi,
+    chat: ChatId,
+    actor: u64,
+    panel_at_request: (i32, u64),
+) -> ResponseResult<()> {
+    use std::fmt::Write as _;
+
+    let mut text = "0x1 · xPing\n\n".to_owned();
+    match crate::market::registered_market_points().await {
+        Ok(points) if points.is_empty() => text.push_str("У реєстрі 0xda-market поки немає точок."),
+        Ok(points) => {
+            text.push_str("Зареєстровані точки 0xda-market");
+            for point in points.iter().take(30) {
+                let _ = write!(text, "\n{} · {}", point.address, point.station_pub_dress);
+            }
+            if points.len() > 30 {
+                let _ = write!(text, "\nПоказано 30 із {}.", points.len());
+            }
+            text.push_str("\n\nЗапуск подорожі з чату ще недоступний.");
+        }
+        Err(_) => text.push_str("Реєстр 0xda-market зараз недоступний. Спробуй /xping ще раз."),
+    }
+    let mut store = state.lock().await;
+    if store.panels.get(&chat.0).is_some_and(|panel| {
+        panel.owner_id == actor && (panel.message_id, panel.revision) == panel_at_request
+    }) {
+        edit_panel_text(
+            bot,
+            &mut store,
+            chat,
+            Screen::MarketPoints,
+            None,
+            Some(text),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn handle_message(
     bot: Bot,
     message: Message,
@@ -631,6 +672,19 @@ async fn handle_message(
             )
             .await;
         }
+        PublicAction::MarketPoints => {
+            let panel = &store.panels[&message.chat.id.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_market_points(
+                &bot,
+                &state,
+                message.chat.id,
+                sender.id.0,
+                panel_at_request,
+            )
+            .await;
+        }
         PublicAction::Subscription => {
             edit_panel(
                 &bot,
@@ -702,6 +756,12 @@ async fn handle_callback(
             )
             .await;
         }
+        Some(Screen::MarketPoints) => {
+            let panel = &store.panels[&chat.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_market_points(&bot, &state, chat, query.from.id.0, panel_at_request).await;
+        }
         Some(Screen::ConfirmLogin) => {
             confirm_login(&bot, &mut store, chat, query.from.id.0, login.as_ref()).await?;
         }
@@ -763,12 +823,16 @@ mod tests {
             private_action(true, true, false, "лети на Майдан"),
             Some(PublicAction::Ignore)
         );
+        assert_eq!(
+            private_action(true, true, false, "/xping@nilxone_bot"),
+            Some(PublicAction::MarketPoints)
+        );
         for (private_chat, human_sender, forwarded) in [
             (false, true, false),
             (true, false, false),
             (true, true, true),
         ] {
-            for command in ["/start", "/bond", "/avaia", "/inventory"] {
+            for command in ["/start", "/bond", "/avaia", "/inventory", "/xping"] {
                 assert_eq!(
                     private_action(private_chat, human_sender, forwarded, command),
                     None
