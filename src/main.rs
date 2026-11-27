@@ -3,7 +3,10 @@
 
 //! Entrypoint for the 0x1 Telegram bot.
 
-use nilx_one_bot::{login::{LoginGateway, gateway_public_key}, providers::telegram::run_bot};
+use nilx_one_bot::{
+    login::{LoginGateway, gateway_public_key},
+    providers::telegram::run_bot,
+};
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -15,12 +18,18 @@ fn matches_production_bot(actual: Option<&str>) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (check_only, public_key_only) = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [] => (false, false),
-        [flag] if flag == "--check" => (true, false),
-        [flag] if flag == "--gateway-public-key" => (true, true),
-        _ => return Err(std::io::Error::other("Usage: nilx-one-bot [--check|--gateway-public-key]").into()),
-    };
+    let (check_only, public_key_only) =
+        match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+            [] => (false, false),
+            [flag] if flag == "--check" => (true, false),
+            [flag] if flag == "--gateway-public-key" => (true, true),
+            _ => {
+                return Err(std::io::Error::other(
+                    "Usage: nilx-one-bot [--check|--gateway-public-key]",
+                )
+                .into());
+            }
+        };
 
     tracing_subscriber::fmt()
         .with_env_filter(

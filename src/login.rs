@@ -6,7 +6,10 @@
 //! original `/login` message. It does not construct its own state/nonce, verify identity,
 //! exchange codes, hold Bond sessions or tokens, or link accounts.
 
-use ring::{hmac, signature::{Ed25519KeyPair, KeyPair as _}};
+use ring::{
+    hmac,
+    signature::{Ed25519KeyPair, KeyPair as _},
+};
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -182,7 +185,10 @@ const SIGNING_SEED_DOMAIN: &[u8] = b"0x1-telegram-bot-signing-seed-v2";
 const REQUEST_DOMAIN: &str = "0x1-telegram-bot-request-v2";
 
 fn bot_signing_key(token: &str) -> Result<Ed25519KeyPair, &'static str> {
-    let seed = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, token.trim().as_bytes()), SIGNING_SEED_DOMAIN);
+    let seed = hmac::sign(
+        &hmac::Key::new(hmac::HMAC_SHA256, token.trim().as_bytes()),
+        SIGNING_SEED_DOMAIN,
+    );
     Ed25519KeyPair::from_seed_unchecked(seed.as_ref()).map_err(|_| "cannot derive Bot workload key")
 }
 
@@ -290,7 +296,10 @@ impl LoginGateway {
     fn signature(&self, timestamp: u64, path: &str, body: &[u8]) -> String {
         let mut message = format!("{REQUEST_DOMAIN}\n{timestamp}\n{path}\n").into_bytes();
         message.extend_from_slice(body);
-        format!("t={timestamp},v2={}", encode_hex(self.key.sign(&message).as_ref()))
+        format!(
+            "t={timestamp},v2={}",
+            encode_hex(self.key.sign(&message).as_ref())
+        )
     }
 
     async fn post_signed(
