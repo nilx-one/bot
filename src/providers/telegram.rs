@@ -515,6 +515,56 @@ async fn show_profile(
     Ok(())
 }
 
+/// The xPing panel text for the registry's answer. Every address and station
+/// is a validated `[a-z0-9-]` segment, so nothing in it needs escaping.
+fn market_points_text(
+    points: Result<Vec<crate::market::RegisteredMarketPoint>, crate::market::MarketError>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = "0x1 · xPing\n\n".to_owned();
+    match points {
+        Ok(points) if points.is_empty() => text.push_str("У реєстрі 0xda-market поки немає точок."),
+        Ok(points) => {
+            text.push_str("Зареєстровані точки 0xda-market");
+            for point in points.iter().take(30) {
+                let _ = write!(text, "\n{} · {}", point.address, point.station_pub_dress);
+            }
+            if points.len() > 30 {
+                let _ = write!(text, "\nПоказано 30 із {}.", points.len());
+            }
+            text.push_str("\n\nЗапуск подорожі з чату ще недоступний.");
+        }
+        Err(_) => text.push_str("Реєстр 0xda-market зараз недоступний. Спробуй /xping ще раз."),
+    }
+    text
+}
+
+async fn show_market_points(
+    bot: &Bot,
+    state: &SharedUi,
+    chat: ChatId,
+    actor: u64,
+    panel_at_request: (i32, u64),
+) -> ResponseResult<()> {
+    let text = market_points_text(crate::market::registered_market_points().await);
+    let mut store = state.lock().await;
+    if store.panels.get(&chat.0).is_some_and(|panel| {
+        panel.owner_id == actor && (panel.message_id, panel.revision) == panel_at_request
+    }) {
+        edit_panel_text(
+            bot,
+            &mut store,
+            chat,
+            Screen::MarketPoints,
+            None,
+            Some(text),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Only an original live share sent by the human on their own private chat
 /// can reach Core. A pin or a location sent via another bot is not a report.
 fn live_location(message: &Message) -> Option<(teloxide::types::Location, u64)> {
@@ -704,6 +754,19 @@ async fn handle_message(
             )
             .await;
         }
+        PublicAction::MarketPoints => {
+            let panel = &store.panels[&message.chat.id.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_market_points(
+                &bot,
+                &state,
+                message.chat.id,
+                sender.id.0,
+                panel_at_request,
+            )
+            .await;
+        }
         PublicAction::Subscription => {
             edit_panel(
                 &bot,
@@ -775,6 +838,12 @@ async fn handle_callback(
             )
             .await;
         }
+        Some(Screen::MarketPoints) => {
+            let panel = &store.panels[&chat.0];
+            let panel_at_request = (panel.message_id, panel.revision);
+            drop(store);
+            return show_market_points(&bot, &state, chat, query.from.id.0, panel_at_request).await;
+        }
         Some(Screen::ConfirmLogin) => {
             confirm_login(&bot, &mut store, chat, query.from.id.0, login.as_ref()).await?;
         }
@@ -837,12 +906,16 @@ mod tests {
             private_action(true, true, false, "лети на Майдан"),
             Some(PublicAction::Ignore)
         );
+        assert_eq!(
+            private_action(true, true, false, "/xping@nilxone_bot"),
+            Some(PublicAction::MarketPoints)
+        );
         for (private_chat, human_sender, forwarded) in [
             (false, true, false),
             (true, false, false),
             (true, true, true),
         ] {
-            for command in ["/start", "/bond", "/avaia", "/inventory"] {
+            for command in ["/start", "/bond", "/avaia", "/inventory", "/xping"] {
                 assert_eq!(
                     private_action(private_chat, human_sender, forwarded, command),
                     None
@@ -1658,6 +1731,29 @@ mod transport_integration_tests {
         assert!(text.contains("Bond · 3 XP"));
         assert!(text.contains("Avaia · 5 XP"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_market_points_panel_fits_one_telegram_message_at_its_limits() {
+        let point = |n: usize| -> crate::market::RegisteredMarketPoint {
+            let address = format!("{n:02}{}", "a".repeat(46));
+            serde_json::from_value(json!({
+                "address": address,
+                "station_pub_dress": format!("0xda-market-{}", "b".repeat(64)),
+                "path": format!("/{address}"),
+            }))
+            .unwrap()
+        };
+        let text = market_points_text(Ok((0..256).map(point).collect()));
+        assert!(text.chars().count() <= 4096, "{}", text.chars().count());
+        assert!(text.contains("Показано 30 із 256."));
+        assert_eq!(text.matches("0xda-market-").count(), 30);
+
+        assert!(market_points_text(Ok(Vec::new())).contains("поки немає точок"));
+        assert!(
+            market_points_text(Err(crate::market::MarketError::Unavailable))
+                .contains("Спробуй /xping ще раз")
+        );
     }
 
     #[tokio::test]
