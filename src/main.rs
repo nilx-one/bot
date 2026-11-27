@@ -3,7 +3,10 @@
 
 //! Entrypoint for the 0x1 Telegram bot.
 
-use nilx_one_bot::{login::LoginGateway, providers::telegram::run_bot};
+use nilx_one_bot::{
+    login::{LoginGateway, gateway_public_key},
+    providers::telegram::run_bot,
+};
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -15,11 +18,19 @@ fn matches_production_bot(actual: Option<&str>) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let check_only = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [] => false,
-        [flag] if flag == "--check" => true,
-        _ => return Err(std::io::Error::other("Usage: nilx-one-bot [--check]").into()),
-    };
+    let (check_only, public_key_only, check_gateway) =
+        match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+            [] => (false, false, false),
+            [flag] if flag == "--check" => (true, false, false),
+            [flag] if flag == "--gateway-public-key" => (true, true, false),
+            [flag] if flag == "--check-gateway" => (true, false, true),
+            _ => {
+                return Err(std::io::Error::other(
+                    "Usage: nilx-one-bot [--check|--gateway-public-key|--check-gateway]",
+                )
+                .into());
+            }
+        };
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -33,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(std::io::Error::other("TELEGRAM_BOT_TOKEN is required").into());
     }
     let login = LoginGateway::from_env(&token).map_err(std::io::Error::other)?;
-    let bot = Bot::new(token);
+    let bot = Bot::new(token.clone());
     let me = bot
         .get_me()
         .await
@@ -41,7 +52,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !matches_production_bot(me.user.username.as_deref()) {
         return Err(std::io::Error::other("TELEGRAM_BOT_TOKEN must belong to @nilxone_bot").into());
     }
-    if !check_only {
+    if public_key_only {
+        let public_key = gateway_public_key(&token).map_err(std::io::Error::other)?;
+        // Only print verified public metadata. No token, seed or signature.
+        println!("TELEGRAM_BOT_ID={}", me.user.id.0);
+        println!("TELEGRAM_BOT_PUBLIC_KEY={public_key}");
+    } else if check_gateway {
+        login
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Gateway configuration is required"))?
+            .check_authority()
+            .await
+            .map_err(|_| std::io::Error::other("Signed Gateway readiness probe failed"))?;
+        println!("Telegram Gateway v2 signed probe passed");
+    } else if !check_only {
         run_bot(bot, login).await?;
     }
     Ok(())
