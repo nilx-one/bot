@@ -144,7 +144,7 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
                 tracing::warn!("Telegram speech delivery refused invalid or expired lease");
                 continue;
             };
-            if !sent.contains_key(&delivery.id) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = sent.entry(delivery.id) {
                 let remaining = delivery
                     .expires_at
                     .saturating_sub(current)
@@ -158,7 +158,7 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
                     tracing::warn!("Telegram speech send did not confirm");
                     continue;
                 }
-                sent.insert(delivery.id, delivery.expires_at);
+                entry.insert(delivery.expires_at);
             }
             let ack = Ack {
                 version: 1,
