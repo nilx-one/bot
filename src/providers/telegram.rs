@@ -462,7 +462,7 @@ async fn profile_text(
                     |seeds| format!("Гаманець · {seeds} Seeds"),
                 );
                 format!(
-                    "{balance}\nКишеня та рюкзак синхронізуються між клієнтами; найактуальніша версія завжди на клієнті з активною сесією."
+                    "{balance}\nКишеня та рюкзак синхронізуються між клієнтами; чат показує лише гаманець Seeds."
                 )
             }))
         }
@@ -1542,6 +1542,8 @@ mod transport_integration_tests {
         assert!(inventory.contains("51 Seeds"));
         assert!(inventory.contains("синхронізуються"));
         assert!(!inventory.contains("де збережено"));
+        assert!(!inventory.contains("завжди"));
+        assert!(!inventory.contains("найактуальніша"));
         std::fs::remove_file(path).unwrap();
     }
 
