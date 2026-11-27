@@ -71,7 +71,9 @@ impl Delivery {
         {
             return None;
         }
-        let actor = i64::try_from(self.provider_actor_id).ok().filter(|id| *id > 0)?;
+        let actor = i64::try_from(self.provider_actor_id)
+            .ok()
+            .filter(|id| *id > 0)?;
         let speaker: PubDress = self.speaker.parse().ok()?;
         let text: SpokenText = self.text.parse().ok()?;
         Some((ChatId(actor), format!("{speaker}: {text}")))
@@ -88,7 +90,11 @@ async fn call<T: DeserializeOwned>(
         return Err(LoginError::Unavailable);
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| LoginError::Unavailable)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| LoginError::Unavailable)?
+    {
         if chunk.len() > MAX_REPLY_BYTES - body.len() {
             return Err(LoginError::InvalidResponse);
         }
@@ -111,7 +117,16 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
             continue;
         };
         sent.retain(|_, expires| *expires > current);
-        let pulled: PullResponse = match call(&gateway, PULL_PATH, &Pull { version: 1, limit: 1 }).await {
+        let pulled: PullResponse = match call(
+            &gateway,
+            PULL_PATH,
+            &Pull {
+                version: 1,
+                limit: 1,
+            },
+        )
+        .await
+        {
             Ok(response) => response,
             Err(_) => {
                 tracing::warn!("Telegram speech pull unavailable");
@@ -130,18 +145,26 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
                 continue;
             };
             if !sent.contains_key(&delivery.id) {
-                let remaining = delivery.expires_at.saturating_sub(current).min(
-                    LEASE_SECONDS.saturating_sub(current.saturating_sub(delivery.claimed_at)),
-                );
+                let remaining = delivery
+                    .expires_at
+                    .saturating_sub(current)
+                    .min(LEASE_SECONDS.saturating_sub(current.saturating_sub(delivery.claimed_at)));
                 let timeout = Duration::from_secs(remaining.min(10));
                 // Plain text; no parse mode and no access to Bond state.
-                if !matches!(tokio::time::timeout(timeout, bot.send_message(chat, text).send()).await, Ok(Ok(_))) {
+                if !matches!(
+                    tokio::time::timeout(timeout, bot.send_message(chat, text).send()).await,
+                    Ok(Ok(_))
+                ) {
                     tracing::warn!("Telegram speech send did not confirm");
                     continue;
                 }
                 sent.insert(delivery.id, delivery.expires_at);
             }
-            let ack = Ack { version: 1, id: delivery.id, claimed_at: delivery.claimed_at };
+            let ack = Ack {
+                version: 1,
+                id: delivery.id,
+                claimed_at: delivery.claimed_at,
+            };
             match call::<AckResponse>(&gateway, ACK_PATH, &ack).await {
                 Ok(response) if response.acknowledged => {}
                 _ => tracing::warn!("Telegram speech receipt not acknowledged"),
@@ -158,13 +181,23 @@ mod tests {
     fn strict_wire_and_plain_text_presentation() {
         let json = r#"{"id":9,"provider_actor_id":42,"speaker":"0x1speaker","text":"Привіт! 🐈","expires_at":1600,"claimed_at":1000}"#;
         let mut delivery: Delivery = serde_json::from_str(json).unwrap();
-        assert_eq!(delivery.presentation(1001), Some((ChatId(42), "0x1speaker: Привіт! 🐈".into())));
+        assert_eq!(
+            delivery.presentation(1001),
+            Some((ChatId(42), "0x1speaker: Привіт! 🐈".into()))
+        );
         assert_eq!(delivery.presentation(1060), None);
         assert_eq!(delivery.presentation(999), None);
         assert_eq!(delivery.presentation(1600), None);
         delivery.provider_actor_id = 0;
         assert_eq!(delivery.presentation(1001), None);
-        let ack = Ack { version: 1, id: 9, claimed_at: 1000 };
-        assert_eq!(serde_json::to_value(ack).unwrap(), serde_json::json!({"version":1,"id":9,"claimed_at":1000}));
+        let ack = Ack {
+            version: 1,
+            id: 9,
+            claimed_at: 1000,
+        };
+        assert_eq!(
+            serde_json::to_value(ack).unwrap(),
+            serde_json::json!({"version":1,"id":9,"claimed_at":1000})
+        );
     }
 }
