@@ -28,6 +28,7 @@ pub enum Screen {
     Avaia,
     Inventory,
     Travel,
+    MarketPoints,
     Organizations,
     Help,
     Unavailable,
@@ -52,6 +53,7 @@ impl Screen {
             Self::Avaia => "avaia",
             Self::Inventory => "inventory",
             Self::Travel => "travel",
+            Self::MarketPoints => "market_points",
             Self::Organizations => "organizations",
             Self::Help => "help",
             Self::Unavailable => "unavailable",
@@ -72,6 +74,7 @@ impl Screen {
             "avaia" => Some(Self::Avaia),
             "inventory" => Some(Self::Inventory),
             "travel" => Some(Self::Travel),
+            "market_points" => Some(Self::MarketPoints),
             "organizations" => Some(Self::Organizations),
             "help" => Some(Self::Help),
             "confirm_login" => Some(Self::ConfirmLogin),
@@ -243,7 +246,11 @@ impl Panel {
             ),
             Screen::Travel => (
                 "0x1 · Подорожі",
-                "Подорожі недоступні: Core Gateway не надав дозволені цілі, маршрути або стан руху.\nБот не створює маршрутів і не підтверджує прибуття.",
+                "Bond · Щоб оновити поточну позицію в Core, надішли нову Live Location у цьому приватному чаті.\nМаршрути Avaia та xPing ще недоступні.",
+            ),
+            Screen::MarketPoints => (
+                "0x1 · xPing",
+                "Не вдалося відкрити реєстр точок 0xda-market.",
             ),
             Screen::Organizations => (
                 "0x1 · Організації",
@@ -251,7 +258,7 @@ impl Panel {
             ),
             Screen::Help => (
                 "0x1 · Допомога",
-                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/bond — мій профіль Bond\n/avaia — моя Avaia\n/inventory — інвентар і Seeds\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
+                "/start — увійти або головна\n/open — відкрити Mini App\n/login — повторити вхід\n/bond — мій профіль Bond\n/avaia — моя Avaia\n/inventory — інвентар і Seeds\n/xping — точки 0xda-market\n/subscription — підписка\nІнша навігація здійснюється кнопками цього повідомлення.",
             ),
             Screen::Unavailable => (
                 "0x1 · Недоступно",
@@ -277,6 +284,12 @@ impl Panel {
         }
         if screen == Screen::LoginFailed {
             rows.push(vec![Button::Navigate("Спробувати ще", Screen::Login)]);
+        }
+        if screen == Screen::Travel || screen == Screen::MarketPoints {
+            rows.push(vec![Button::Navigate(
+                "Точки 0xda-market",
+                Screen::MarketPoints,
+            )]);
         }
         if screen == Screen::MiniApp {
             rows.push(vec![Button::OpenMiniApp]);

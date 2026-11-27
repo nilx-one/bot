@@ -15,6 +15,8 @@ use std::{
 /// `nilxone_api::bot_login::SIGNATURE_HEADER`.
 const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
 const START_PATH: &str = "/api/v1/telegram/login/start";
+/// `nilxone_api::bot_login::CHAT_LOCATION_PATH`.
+const LOCATION_PATH: &str = "/api/v1/telegram/location";
 /// `nilxone_api::bot_login::CHAT_PROFILE_PATH`.
 const PROFILE_PATH: &str = "/api/v1/telegram/profile";
 /// `nilxone_api::bot_login::CONFIRM_PATH`, on the same product host.
@@ -303,6 +305,44 @@ impl LoginGateway {
             .send()
             .await
             .map_err(|_| LoginError::Unavailable)
+    }
+
+    pub(crate) async fn report_live_location(
+        &self,
+        actor: u64,
+        chat: i64,
+        latitude: f64,
+        longitude: f64,
+        observed_at: u64,
+    ) -> Result<bool, LoginError> {
+        if chat <= 0 || i64::try_from(actor).ok() != Some(chat) {
+            return Err(LoginError::InvalidResponse);
+        }
+        #[derive(Serialize)]
+        struct Report {
+            chat: ChatProfileRequest,
+            latitude: f64,
+            longitude: f64,
+            observed_at: u64,
+        }
+        let request = Report {
+            chat: ChatProfileRequest {
+                version: 1,
+                provider: "telegram",
+                provider_actor_id: actor,
+                chat_id: chat,
+                section: ProfileSection::Bond,
+            },
+            latitude,
+            longitude,
+            observed_at,
+        };
+        let response = self.post_signed(LOCATION_PATH, &request).await?;
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(true),
+            reqwest::StatusCode::CONFLICT => Ok(false),
+            _ => Err(LoginError::Unavailable),
+        }
     }
 
     pub(crate) async fn own_profile(
