@@ -214,7 +214,7 @@ impl Panel {
         let (title, description) = match screen {
             Screen::Home => (
                 "0x1 · Text",
-                "Текстовий клієнт 0x1.\nСесія Bond не підтверджена Core.\nОберіть розділ або авторизуйтеся через aiaiaiai AIS.",
+                "Текстовий клієнт 0x1.\nОберіть розділ. Дані Bond, Avaia та інвентар показує Core після входу через /login (aiaiaiai AIS).",
             ),
             Screen::Login => (
                 "0x1 · AIS",
@@ -363,6 +363,22 @@ impl UiStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_home_panel_says_nothing_about_the_session() {
+        // The panel's login projection lives in memory and is forgotten on a
+        // restart, while Core keeps the session; a static line about it would
+        // be wrong for a chat that is in fact signed in.
+        let view = Panel::new(1, 1).view_for(Screen::Home, None, 1);
+        for claim in ["підтверджена", "не підтверджена", "Увійшли", "сесія"]
+        {
+            assert!(
+                !view.text.to_lowercase().contains(&claim.to_lowercase()),
+                "{claim}"
+            );
+        }
+        assert!(view.text.contains("/login"));
+    }
 
     #[test]
     fn callback_requires_owner_message_and_current_revision() {

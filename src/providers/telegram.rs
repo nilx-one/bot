@@ -941,7 +941,7 @@ mod tests {
     fn handler_rendered_panel_is_text_only_and_never_invents_core_state() {
         let panel = Panel::new(8, 10);
         for (screen, expected) in [
-            (Screen::Home, "Сесія Bond не підтверджена Core"),
+            (Screen::Home, "показує Core після входу через /login"),
             (Screen::Subscription, "Підписка недоступна"),
             (Screen::Inventory, "Інвентар недоступний"),
             (Screen::Travel, "надішли нову Live Location"),
@@ -1511,7 +1511,7 @@ mod transport_integration_tests {
         let unreachable =
             url::Url::parse("http://127.0.0.1:9/api/v1/telegram/login/start").unwrap();
         for (command, expected) in [
-            ("/start", "Сесія Bond не підтверджена"),
+            ("/start", "показує Core після входу через /login"),
             ("/login", "AIS-авторизація недоступна"),
         ] {
             let (bot, server) = telegram_api(vec!["sendMessage", "deleteMessage"]);
@@ -1671,7 +1671,7 @@ mod transport_integration_tests {
             requests[3].1["text"]
                 .as_str()
                 .unwrap()
-                .contains("Сесія Bond не підтверджена")
+                .contains("показує Core після входу через /login")
         );
         let store = state.lock().await;
         assert_eq!(store.panels.get(&42).unwrap().message_id, 100);
