@@ -20,6 +20,12 @@ const ACK_PATH: &str = "/api/v1/telegram/speech/ack";
 const LEASE_SECONDS: u64 = 60;
 const TTL_SECONDS: u64 = 600;
 const MAX_REPLY_BYTES: usize = 8 * 1024;
+/// Claimed at once and sent one after another. Core caps a pull at ten; five
+/// sends of at most ten seconds each still fit inside one 60-second lease.
+const BATCH: usize = 5;
+const DRAIN_PAUSE: Duration = Duration::from_millis(200);
+const IDLE_PAUSE: Duration = Duration::from_secs(5);
+const ERROR_PAUSE: Duration = Duration::from_secs(30);
 
 #[derive(Serialize)]
 struct Pull {
@@ -55,6 +61,18 @@ struct Ack {
 #[serde(deny_unknown_fields)]
 struct AckResponse {
     acknowledged: bool,
+}
+
+/// How long to wait before the next pull. A pull that returned work is
+/// followed almost at once, so a backlog drains at the speed of Telegram and
+/// not of a timer (a 100-recipient line must fit in the 10-minute TTL); an
+/// empty pull waits, a failed one backs off. `None` is a failed pull.
+fn pause_after(pulled: Option<usize>) -> Duration {
+    match pulled {
+        Some(0) => IDLE_PAUSE,
+        Some(_) => DRAIN_PAUSE,
+        None => ERROR_PAUSE,
+    }
 }
 
 fn now() -> Option<u64> {
@@ -109,10 +127,10 @@ async fn call<T: DeserializeOwned>(
 /// delivery. No content, credentials or recipient IDs are written to logs.
 pub async fn run(bot: Bot, gateway: LoginGateway) {
     let mut sent = HashMap::<u64, u64>::new();
-    let mut delay = Duration::from_secs(5);
+    let mut pause = IDLE_PAUSE;
     loop {
-        tokio::time::sleep(delay).await;
-        delay = Duration::from_secs(5);
+        tokio::time::sleep(pause).await;
+        pause = IDLE_PAUSE;
         let Some(current) = now() else {
             continue;
         };
@@ -122,7 +140,7 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
             PULL_PATH,
             &Pull {
                 version: 1,
-                limit: 1,
+                limit: BATCH,
             },
         )
         .await
@@ -130,14 +148,15 @@ pub async fn run(bot: Bot, gateway: LoginGateway) {
             Ok(response) => response,
             Err(_) => {
                 tracing::warn!("Telegram speech pull unavailable");
-                delay = Duration::from_secs(30);
+                pause = pause_after(None);
                 continue;
             }
         };
-        if pulled.deliveries.len() > 1 {
+        if pulled.deliveries.len() > BATCH {
             tracing::warn!("Telegram speech pull exceeded requested limit");
             continue;
         }
+        pause = pause_after(Some(pulled.deliveries.len()));
         for delivery in pulled.deliveries {
             let Some(current) = now() else { continue };
             let Some((chat, text)) = delivery.presentation(current) else {
@@ -199,5 +218,36 @@ mod tests {
             serde_json::to_value(ack).unwrap(),
             serde_json::json!({"version":1,"id":9,"claimed_at":1000})
         );
+    }
+
+    #[test]
+    fn pull_and_reply_wire_match_core() {
+        assert_eq!(
+            serde_json::to_value(Pull {
+                version: 1,
+                limit: BATCH,
+            })
+            .unwrap(),
+            serde_json::json!({"version":1,"limit":5})
+        );
+        // Core refuses a pull above its batch size, so ours must not exceed it.
+        const { assert!(BATCH <= 10) };
+        let empty: PullResponse = serde_json::from_str(r#"{"deliveries":[]}"#).unwrap();
+        assert!(empty.deliveries.is_empty());
+        assert!(serde_json::from_str::<PullResponse>(r#"{"deliveries":[],"x":1}"#).is_err());
+        assert!(serde_json::from_str::<AckResponse>(r#"{"acknowledged":true,"x":1}"#).is_err());
+    }
+
+    #[test]
+    fn a_backlog_drains_without_waiting_out_the_idle_timer() {
+        assert_eq!(pause_after(Some(0)), IDLE_PAUSE);
+        assert_eq!(pause_after(Some(1)), DRAIN_PAUSE);
+        assert_eq!(pause_after(Some(BATCH)), DRAIN_PAUSE);
+        assert_eq!(pause_after(None), ERROR_PAUSE);
+        // A line for 100 recipients (Core's cap) pulled five at a time, one
+        // pull and one send round each, must finish well inside the 10-minute TTL.
+        let pulls = 100_u64.div_ceil(BATCH as u64);
+        let timer = DRAIN_PAUSE.as_secs_f64() * pulls as f64;
+        assert!(timer < 10.0, "{timer}");
     }
 }
