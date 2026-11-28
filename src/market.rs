@@ -258,27 +258,45 @@ async fn fetch_registered_points(url: &str) -> Result<Vec<RegisteredMarketPoint>
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|_| MarketError::InvalidConfiguration)?;
+    // The panel only says "unavailable"; the log says why. Only a category or a
+    // status code is recorded: no body, no header and no address.
     let mut response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|_| MarketError::Unavailable)?;
+        .map_err(|error| {
+            let kind = if error.is_timeout() {
+                "timeout"
+            } else if error.is_connect() {
+                "connect"
+            } else {
+                "request"
+            };
+            tracing::warn!(kind, "market registry request failed");
+            MarketError::Unavailable
+        })?;
     if !response.status().is_success() {
+        tracing::warn!(
+            status = response.status().as_u16(),
+            "market registry answered with a failure status"
+        );
         return Err(MarketError::Unavailable);
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| MarketError::Unavailable)?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        tracing::warn!("market registry answer was cut off");
+        MarketError::Unavailable
+    })? {
         if chunk.len() > MAX_DIRECTORY_BYTES - bytes.len() {
+            tracing::warn!("market registry answer exceeds the size limit");
             return Err(MarketError::InvalidResponse);
         }
         bytes.extend_from_slice(&chunk);
     }
-    parse_registered_points(&bytes)
+    parse_registered_points(&bytes).inspect_err(|_| {
+        tracing::warn!("market registry answer is not a valid point directory");
+    })
 }
 
 fn parse_registered_points(bytes: &[u8]) -> Result<Vec<RegisteredMarketPoint>, MarketError> {
