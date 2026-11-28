@@ -3,3 +3,4 @@
 
 pub mod telegram;
 pub mod telegram_init_data;
+pub mod telegram_speech;

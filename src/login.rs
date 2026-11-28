@@ -302,7 +302,7 @@ impl LoginGateway {
         )
     }
 
-    async fn post_signed(
+    pub(crate) async fn post_signed(
         &self,
         path: &str,
         request: &impl Serialize,

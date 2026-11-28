@@ -5,7 +5,7 @@
 
 use nilx_one_bot::{
     login::{LoginGateway, gateway_public_key},
-    providers::telegram::run_bot,
+    providers::{telegram::run_bot, telegram_speech},
 };
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -66,7 +66,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| std::io::Error::other("Signed Gateway readiness probe failed"))?;
         println!("Telegram Gateway v2 signed probe passed");
     } else if !check_only {
-        run_bot(bot, login).await?;
+        let speech_worker = login
+            .clone()
+            .map(|gateway| tokio::spawn(telegram_speech::run(bot.clone(), gateway)));
+        let result = run_bot(bot, login).await;
+        if let Some(worker) = speech_worker {
+            worker.abort();
+        }
+        result?;
     }
     Ok(())
 }
